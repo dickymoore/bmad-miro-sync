@@ -1,0 +1,20 @@
+{
+  "name": "bmad-miro-sync-local",
+  "interface": {
+    "displayName": "BMad Miro Sync Local"
+  },
+  "plugins": [
+    {
+      "name": "bmad-miro-sync-codex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/bmad-miro-sync-codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

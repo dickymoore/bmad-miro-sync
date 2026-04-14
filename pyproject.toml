@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bmad-miro-sync"
+version = "0.1.0"
+description = "Host-neutral BMad to Miro synchronization tooling"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+  { name = "Codexuser" }
+]
+dependencies = []
+
+[project.scripts]
+bmad-miro-sync = "bmad_miro_sync.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

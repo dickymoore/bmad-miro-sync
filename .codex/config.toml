@@ -1,0 +1,5 @@
+[projects."/home/codexuser/bmad-miro-sync"]
+trust_level = "trusted"
+
+[mcp_servers.miro]
+url = "https://mcp.miro.com/"

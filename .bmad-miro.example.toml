@@ -1,0 +1,13 @@
+board_url = "https://miro.com/app/board/uXjVGixS6vQ=/"
+source_root = "_bmad-output"
+manifest_path = ".bmad-miro-sync/state.json"
+
+[layout]
+create_phase_frames = true
+
+[publish]
+analysis = true
+planning = true
+solutioning = true
+implementation = true
+stories_table = true

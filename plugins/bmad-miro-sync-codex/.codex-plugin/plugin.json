@@ -1,0 +1,39 @@
+{
+  "name": "bmad-miro-sync-codex",
+  "version": "0.1.0",
+  "description": "Codex plugin wrapper for executing bmad-miro-sync plans against Miro.",
+  "author": {
+    "name": "Codexuser",
+    "email": "opensource@example.invalid",
+    "url": "https://github.com/codexuser/bmad-miro-sync"
+  },
+  "homepage": "https://github.com/codexuser/bmad-miro-sync",
+  "repository": "https://github.com/codexuser/bmad-miro-sync",
+  "license": "MIT",
+  "keywords": [
+    "bmad",
+    "miro",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "BMad Miro Sync for Codex",
+    "shortDescription": "Publish BMad outputs to Miro from Codex.",
+    "longDescription": "Exports bmad-miro-sync plans, executes them with Codex Miro MCP tools, and records stable sync results back into the repo manifest.",
+    "developerName": "Codexuser",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/codexuser/bmad-miro-sync",
+    "privacyPolicyURL": "https://github.com/codexuser/bmad-miro-sync",
+    "termsOfServiceURL": "https://github.com/codexuser/bmad-miro-sync",
+    "defaultPrompt": [
+      "Sync this BMad repo to the linked Miro board.",
+      "Export the bmad-miro-sync plan and publish it in Miro.",
+      "Update Miro from the latest BMad artifacts."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

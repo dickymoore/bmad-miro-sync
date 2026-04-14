@@ -1,0 +1,7 @@
+_bmad-output/implementation-artifacts/
+.bmad-miro.toml
+.bmad-miro-sync/
+.DS_Store
+node_modules/
+dist/
+coverage/
