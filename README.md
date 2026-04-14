@@ -10,6 +10,36 @@ This repository is intended to provide:
 
 Planning artifacts live in `_bmad-output/planning-artifacts/`.
 
+## Installation
+
+The intended setup path is the installer command. It writes the local repo config, adds the project-local sync skill, creates a short usage doc, and patches BMad skills by default so artifact-producing workflows invoke the sync path automatically.
+
+Install into a target repo:
+
+```bash
+PYTHONPATH=src python3 -m bmad_miro_sync install \
+  --project-root /path/to/project \
+  --board-url https://miro.com/app/board/your-board-id=/
+```
+
+By default, this command patches existing BMad skill headers with the sync policy. To opt out:
+
+```bash
+PYTHONPATH=src python3 -m bmad_miro_sync install \
+  --project-root /path/to/project \
+  --board-url https://miro.com/app/board/your-board-id=/ \
+  --no-patch-bmad-skills
+```
+
+The installer creates:
+
+- `.bmad-miro.toml`
+- `.agents/skills/bmad-miro-auto-sync/SKILL.md`
+- `docs/miro-sync.md`
+- `.gitignore` entry for `.bmad-miro-sync/`
+
+And, by default, it patches repo-local `bmad-*` skill headers with the sync policy.
+
 ## MVP Status
 
 The current MVP provides:
@@ -49,6 +79,12 @@ Build a sync plan:
 
 ```bash
 PYTHONPATH=src python3 -m bmad_miro_sync plan --project-root . --config .bmad-miro.toml
+```
+
+Install into another repo:
+
+```bash
+PYTHONPATH=src python3 -m bmad_miro_sync install --project-root /path/to/project --board-url https://miro.com/app/board/your-board-id=/
 ```
 
 Render Codex-oriented execution instructions:

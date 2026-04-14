@@ -7,6 +7,7 @@ import sys
 
 from .config import load_config
 from .host_exports import build_codex_bundle, render_host_instructions, write_json
+from .installer import install_project
 from .manifest import apply_results, load_manifest, save_manifest
 from .planner import build_sync_plan
 
@@ -28,16 +29,30 @@ def main() -> int:
     _add_common_args(bundle_parser)
     bundle_parser.add_argument("--output-dir", required=True, help="Directory to write plan, instructions, and results template.")
 
+    install_parser = subparsers.add_parser("install", help="Install bmad-miro-sync into a target project.")
+    install_parser.add_argument("--project-root", default=".", help="Target project root.")
+    install_parser.add_argument("--board-url", required=True, help="Miro board URL.")
+    install_parser.add_argument(
+        "--sync-src",
+        default=str(Path(__file__).resolve().parents[2] / "src"),
+        help="Path to the bmad_miro_sync source directory used for PYTHONPATH in generated docs/skills.",
+    )
+    install_parser.add_argument(
+        "--no-patch-bmad-skills",
+        action="store_true",
+        help="Do not patch existing BMad skill headers with the sync policy.",
+    )
+
     results_parser = subparsers.add_parser("apply-results", help="Apply execution results to the local manifest.")
     _add_common_args(results_parser)
     results_parser.add_argument("--results", required=True, help="JSON file with execution results.")
 
     args = parser.parse_args()
-    project_root = Path(args.project_root).resolve()
-    config_path = Path(args.config).resolve()
-    config = load_config(config_path)
 
     if args.command == "plan":
+        project_root = Path(args.project_root).resolve()
+        config_path = Path(args.config).resolve()
+        config = load_config(config_path)
         plan = build_sync_plan(project_root, config_path, config)
         payload = plan.to_dict()
         if args.output:
@@ -48,6 +63,9 @@ def main() -> int:
         return 0
 
     if args.command == "render-host-instructions":
+        project_root = Path(args.project_root).resolve()
+        config_path = Path(args.config).resolve()
+        config = load_config(config_path)
         plan = build_sync_plan(project_root, config_path, config)
         output = render_host_instructions(plan, args.host)
         if args.output:
@@ -59,6 +77,9 @@ def main() -> int:
         return 0
 
     if args.command == "export-codex-bundle":
+        project_root = Path(args.project_root).resolve()
+        config_path = Path(args.config).resolve()
+        config = load_config(config_path)
         plan = build_sync_plan(project_root, config_path, config)
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -71,7 +92,27 @@ def main() -> int:
         )
         return 0
 
+    if args.command == "install":
+        result = install_project(
+            args.project_root,
+            args.board_url,
+            sync_src=args.sync_src,
+            patch_bmad_skills=not args.no_patch_bmad_skills,
+        )
+        payload = {
+            "project_root": str(result.project_root),
+            "written_files": [str(path) for path in result.written_files],
+            "patched_skills": [str(path) for path in result.patched_skills],
+            "skipped_skills": [str(path) for path in result.skipped_skills],
+        }
+        json.dump(payload, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 0
+
     if args.command == "apply-results":
+        project_root = Path(args.project_root).resolve()
+        config_path = Path(args.config).resolve()
+        config = load_config(config_path)
         manifest = load_manifest(project_root, config.manifest_path)
         results = json.loads(Path(args.results).read_text(encoding="utf-8"))
         updated = apply_results(manifest, results)
