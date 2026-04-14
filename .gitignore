@@ -7,3 +7,5 @@ __pycache__/
 node_modules/
 dist/
 coverage/
+.codex/
+.codex/.personality_migration
