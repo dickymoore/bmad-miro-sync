@@ -28,6 +28,7 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue((root / "docs/miro-sync.md").exists())
             self.assertTrue((root / ".agents/skills/bmad-miro-auto-sync/SKILL.md").exists())
             self.assertTrue((root / ".agents/skills/bmad-ingest-miro-comments/SKILL.md").exists())
+            self.assertEqual(result.backup_files, [])
             self.assertIn(root / ".agents/skills/bmad-create-prd/SKILL.md", result.patched_skills)
             patched = (root / ".agents/skills/bmad-create-prd/SKILL.md").read_text(encoding="utf-8")
             self.assertIn("## BMad Miro Sync Policy", patched)
@@ -50,7 +51,33 @@ class InstallerTests(unittest.TestCase):
             )
 
             self.assertEqual(result.patched_skills, [])
+            self.assertEqual(result.backup_files, [])
             self.assertNotIn("## BMad Miro Sync Policy", skill.read_text(encoding="utf-8"))
+
+    def test_install_backs_up_changed_config_before_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config_path = root / ".bmad-miro.toml"
+            config_path.write_text(
+                'board_url = "https://miro.com/app/board/original=/"\nsource_root = "_bmad-output"\n',
+                encoding="utf-8",
+            )
+
+            result = install_project(
+                root,
+                "https://miro.com/app/board/uXjVGixS6vQ=/",
+                sync_src="/tmp/bmad-miro-sync/src",
+                patch_bmad_skills=False,
+            )
+
+            self.assertEqual(len(result.backup_files), 1)
+            backup_path = result.backup_files[0]
+            self.assertTrue(backup_path.exists())
+            self.assertEqual(
+                backup_path.read_text(encoding="utf-8"),
+                'board_url = "https://miro.com/app/board/original=/"\nsource_root = "_bmad-output"\n',
+            )
+            self.assertIn('uXjVGixS6vQ', config_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

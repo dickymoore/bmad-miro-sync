@@ -112,6 +112,7 @@ def main() -> int:
         payload = {
             "project_root": str(result.project_root),
             "written_files": [str(path) for path in result.written_files],
+            "backup_files": [str(path) for path in result.backup_files],
             "patched_skills": [str(path) for path in result.patched_skills],
             "skipped_skills": [str(path) for path in result.skipped_skills],
         }

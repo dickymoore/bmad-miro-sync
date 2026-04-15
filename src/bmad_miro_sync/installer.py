@@ -18,6 +18,7 @@ from .templates import (
 class InstallResult:
     project_root: Path
     written_files: list[Path]
+    backup_files: list[Path]
     patched_skills: list[Path]
     skipped_skills: list[Path]
 
@@ -40,6 +41,7 @@ def install_project(
     gitignore_path = root / ".gitignore"
 
     written_files: list[Path] = []
+    backup_files: list[Path] = []
     patched_skills: list[Path] = []
     skipped_skills: list[Path] = []
 
@@ -47,7 +49,14 @@ def install_project(
     comment_skill_path.parent.mkdir(parents=True, exist_ok=True)
     doc_path.parent.mkdir(parents=True, exist_ok=True)
 
-    config_path.write_text(render_config(board_url), encoding="utf-8")
+    rendered_config = render_config(board_url)
+    if config_path.exists():
+        existing_config = config_path.read_text(encoding="utf-8")
+        if existing_config != rendered_config:
+            backup_path = _next_backup_path(config_path)
+            backup_path.write_text(existing_config, encoding="utf-8")
+            backup_files.append(backup_path)
+    config_path.write_text(rendered_config, encoding="utf-8")
     written_files.append(config_path)
 
     skill_path.write_text(
@@ -87,6 +96,19 @@ def install_project(
     return InstallResult(
         project_root=root,
         written_files=written_files,
+        backup_files=backup_files,
         patched_skills=patched_skills,
         skipped_skills=skipped_skills,
     )
+
+
+def _next_backup_path(path: Path) -> Path:
+    candidate = path.with_name(path.name + ".bak")
+    if not candidate.exists():
+        return candidate
+    index = 2
+    while True:
+        candidate = path.with_name(f"{path.name}.bak.{index}")
+        if not candidate.exists():
+            return candidate
+        index += 1
