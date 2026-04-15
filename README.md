@@ -50,6 +50,7 @@ The current MVP provides:
 - local manifest persistence to avoid duplicate publishing
 - host-neutral operation export for MCP-capable hosts
 - Codex-oriented instruction rendering
+- normalized Miro comment ingestion into BMAD review artifacts
 
 The current implementation does not directly call Miro from the Python CLI. Instead it exports a sync plan that a host such as Codex can execute using its Miro MCP tools, then records the results back into the local manifest.
 
@@ -106,11 +107,23 @@ Apply host execution results to the manifest:
 PYTHONPATH=src python3 -m bmad_miro_sync apply-results --project-root . --config .bmad-miro.toml --results results.json
 ```
 
+Ingest normalized Miro comments into a review artifact:
+
+```bash
+PYTHONPATH=src python3 -m bmad_miro_sync ingest-comments --project-root . --config .bmad-miro.toml --comments .bmad-miro-sync/run/comments.json
+```
+
 ## Host Workflow
 
 1. Run `plan` to export operations for section docs, frames, and tables.
 2. Execute those operations in a host with Miro MCP access.
 3. Save execution results as JSON.
 4. Run `apply-results` to update `.bmad-miro-sync/state.json`.
+
+For feedback ingest:
+
+1. Read `.bmad-miro-sync/state.json` to identify synced section items.
+2. Fetch and normalize comments from Miro into `comments.json`.
+3. Run `ingest-comments` to write `_bmad-output/review-artifacts/miro-comments.md`.
 
 This flow is designed for Codex first, but the same plan and results handshake can be used by Claude Code, Gemini CLI, or other environments that can execute Miro MCP operations.

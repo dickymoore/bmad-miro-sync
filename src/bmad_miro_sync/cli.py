@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 
+from .comments import DEFAULT_COMMENTS_OUTPUT, ingest_comments
 from .config import load_config
 from .host_exports import build_codex_bundle, render_host_instructions, write_json
 from .installer import install_project
@@ -46,6 +47,15 @@ def main() -> int:
     results_parser = subparsers.add_parser("apply-results", help="Apply execution results to the local manifest.")
     _add_common_args(results_parser)
     results_parser.add_argument("--results", required=True, help="JSON file with execution results.")
+
+    comments_parser = subparsers.add_parser("ingest-comments", help="Convert normalized Miro comments into a BMAD review artifact.")
+    _add_common_args(comments_parser)
+    comments_parser.add_argument("--comments", required=True, help="JSON file with normalized Miro comments.")
+    comments_parser.add_argument(
+        "--output",
+        default=DEFAULT_COMMENTS_OUTPUT,
+        help="Markdown output path relative to the project root.",
+    )
 
     args = parser.parse_args()
 
@@ -117,6 +127,21 @@ def main() -> int:
         results = json.loads(Path(args.results).read_text(encoding="utf-8"))
         updated = apply_results(manifest, results)
         save_manifest(project_root, config.manifest_path, updated)
+        return 0
+
+    if args.command == "ingest-comments":
+        project_root = Path(args.project_root).resolve()
+        config_path = Path(args.config).resolve()
+        config = load_config(config_path)
+        manifest = load_manifest(project_root, config.manifest_path)
+        comments = json.loads(Path(args.comments).read_text(encoding="utf-8"))
+        output_path = ingest_comments(
+            manifest,
+            comments,
+            output_path=project_root / args.output,
+        )
+        json.dump({"output_path": str(output_path)}, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
         return 0
 
     return 1

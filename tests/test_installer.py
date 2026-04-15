@@ -27,6 +27,7 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue((root / ".bmad-miro.toml").exists())
             self.assertTrue((root / "docs/miro-sync.md").exists())
             self.assertTrue((root / ".agents/skills/bmad-miro-auto-sync/SKILL.md").exists())
+            self.assertTrue((root / ".agents/skills/bmad-ingest-miro-comments/SKILL.md").exists())
             self.assertIn(root / ".agents/skills/bmad-create-prd/SKILL.md", result.patched_skills)
             patched = (root / ".agents/skills/bmad-create-prd/SKILL.md").read_text(encoding="utf-8")
             self.assertIn("## BMad Miro Sync Policy", patched)

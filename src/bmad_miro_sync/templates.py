@@ -117,6 +117,67 @@ For {project_name}, this is the practical automatic sync path inside Codex becau
 """
 
 
+def render_comment_ingest_skill(project_root: str, sync_src: str, config_path: str, runtime_dir: str, project_name: str) -> str:
+    comments_path = f"{runtime_dir}/comments.json"
+    return f"""---
+name: bmad-ingest-miro-comments
+description: Fetch normalized Miro comments for synced {project_name} sections and write them into a BMAD review artifact.
+---
+
+# BMad Ingest Miro Comments
+
+Use this skill when stakeholders have added comments in Miro and those comments should be brought back into the repo as review input.
+
+## Repo-Specific Settings
+
+- Project root: `{project_root}`
+- Sync package source: `{sync_src}`
+- Sync config: `{config_path}`
+- Runtime directory: `{runtime_dir}`
+
+## Expected Input
+
+Create `{comments_path}` with this JSON shape:
+
+```json
+{{
+  "comments": [
+    {{
+      "artifact_id": "_bmad-output/planning-artifacts/prd.md#goals",
+      "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+      "section_title": "PRD / Goals",
+      "author": "Jane Doe",
+      "created_at": "2026-04-15T11:00:00Z",
+      "body": "Please expand the acceptance criteria.",
+      "miro_url": "https://miro.com/app/board/..."
+    }}
+  ]
+}}
+```
+
+## Workflow
+
+1. Read `.bmad-miro-sync/state.json` to identify synced section items.
+2. Use Codex Miro tools to fetch comments for the mapped section items the user cares about.
+3. Normalize those comments into `{comments_path}` using the JSON shape above.
+4. Run:
+
+```bash
+PYTHONPATH={sync_src} \\
+python3 -m bmad_miro_sync ingest-comments \\
+  --project-root {project_root} \\
+  --config {config_path} \\
+  --comments {comments_path}
+```
+
+## Rules
+
+- Do not modify `_bmad-output` source artifacts directly from Miro comments.
+- Write comments into the generated review artifact and report the output path.
+- Preserve `artifact_id` exactly so comments stay attached to the right markdown section.
+"""
+
+
 def render_doc(project_root: str, sync_src: str, config_path: str, runtime_dir: str, board_url: str) -> str:
     return f"""# Miro Sync
 
@@ -174,6 +235,7 @@ python3 -m bmad_miro_sync apply-results \\
 For normal use inside Codex, use the local skill:
 
 - `bmad-miro-auto-sync`
+- `bmad-ingest-miro-comments`
 
 That skill wraps the full project-specific flow:
 
@@ -186,6 +248,11 @@ The intended project workflow is:
 
 1. run a BMad step that updates `_bmad-output`
 2. immediately run `bmad-miro-auto-sync`
+
+To bring stakeholder comments back in as review material:
+
+1. fetch and normalize Miro comments for synced section items
+2. run `bmad-ingest-miro-comments`
 """
 
 
@@ -218,5 +285,5 @@ def skill_files(root: Path) -> list[Path]:
     return sorted(
         path
         for path in skills_root.glob("*/SKILL.md")
-        if path.name == "SKILL.md" and path.parent.name != "bmad-miro-auto-sync"
+        if path.name == "SKILL.md" and path.parent.name not in {"bmad-miro-auto-sync", "bmad-ingest-miro-comments"}
     )

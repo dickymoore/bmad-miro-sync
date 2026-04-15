@@ -6,6 +6,7 @@ from pathlib import Path
 from .templates import (
     ensure_gitignore_entries,
     insert_sync_policy,
+    render_comment_ingest_skill,
     render_config,
     render_doc,
     render_skill,
@@ -34,6 +35,7 @@ def install_project(
     config_path = root / ".bmad-miro.toml"
     runtime_dir = root / ".bmad-miro-sync" / "run"
     skill_path = root / ".agents" / "skills" / "bmad-miro-auto-sync" / "SKILL.md"
+    comment_skill_path = root / ".agents" / "skills" / "bmad-ingest-miro-comments" / "SKILL.md"
     doc_path = root / "docs" / "miro-sync.md"
     gitignore_path = root / ".gitignore"
 
@@ -42,6 +44,7 @@ def install_project(
     skipped_skills: list[Path] = []
 
     skill_path.parent.mkdir(parents=True, exist_ok=True)
+    comment_skill_path.parent.mkdir(parents=True, exist_ok=True)
     doc_path.parent.mkdir(parents=True, exist_ok=True)
 
     config_path.write_text(render_config(board_url), encoding="utf-8")
@@ -52,6 +55,12 @@ def install_project(
         encoding="utf-8",
     )
     written_files.append(skill_path)
+
+    comment_skill_path.write_text(
+        render_comment_ingest_skill(str(root), sync_src, str(config_path), str(runtime_dir), project_name),
+        encoding="utf-8",
+    )
+    written_files.append(comment_skill_path)
 
     doc_path.write_text(
         render_doc(str(root), sync_src, str(config_path), str(runtime_dir), board_url),
