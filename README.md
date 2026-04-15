@@ -45,6 +45,7 @@ And, by default, it patches repo-local `bmad-*` skill headers with the sync poli
 The current MVP provides:
 
 - artifact discovery from `_bmad-output`
+- section-level markdown splitting for more navigable Miro publishing
 - artifact classification and deterministic sync planning
 - local manifest persistence to avoid duplicate publishing
 - host-neutral operation export for MCP-capable hosts
@@ -107,7 +108,7 @@ PYTHONPATH=src python3 -m bmad_miro_sync apply-results --project-root . --config
 
 ## Host Workflow
 
-1. Run `plan` to export operations for docs, frames, and tables.
+1. Run `plan` to export operations for section docs, frames, and tables.
 2. Execute those operations in a host with Miro MCP access.
 3. Save execution results as JSON.
 4. Run `apply-results` to update `.bmad-miro-sync/state.json`.

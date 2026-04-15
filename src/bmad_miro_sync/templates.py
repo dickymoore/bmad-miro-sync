@@ -29,7 +29,7 @@ stories_table = true
 def render_skill(project_root: str, sync_src: str, config_path: str, runtime_dir: str, project_name: str) -> str:
     return f"""---
 name: bmad-miro-auto-sync
-description: Export the {project_name} BMad-to-Miro bundle, execute it with Codex Miro tools, and apply the results back into the local sync manifest.
+description: Export the {project_name} BMad-to-Miro bundle, execute section-level sync with Codex Miro tools, and apply the results back into the local sync manifest.
 ---
 
 # BMad Miro Auto Sync
@@ -99,7 +99,9 @@ python3 -m bmad_miro_sync apply-results \\
 ## Rules
 
 - Treat `_bmad-output` as the source of truth
+- Sync one Miro item per exported markdown section rather than one item per source file
 - Preserve `target_key` exactly
+- Preserve existing Miro item positions and manual workflow grouping when updating content
 - Do not fabricate successful results if a Miro operation fails
 - Prefer updating an existing mapped item over creating a duplicate
 - At the end, report which Miro items were created or updated
@@ -175,7 +177,7 @@ For normal use inside Codex, use the local skill:
 
 That skill wraps the full project-specific flow:
 
-1. export the sync bundle
+1. export the section-level sync bundle
 2. execute the Miro operations with Codex MCP tools
 3. write `results.json`
 4. apply the results back into the local manifest

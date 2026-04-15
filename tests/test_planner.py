@@ -28,13 +28,16 @@ stories_table = true
 
 
 class PlannerTests(unittest.TestCase):
-    def test_plan_discovers_docs_and_story_table(self) -> None:
+    def test_plan_discovers_sections_and_story_table(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
             (root / "_bmad-output/implementation-artifacts/stories").mkdir(parents=True)
             (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
-            (root / "_bmad-output/planning-artifacts/prd.md").write_text("# PRD\n\nBody\n", encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text(
+                "# PRD\n\nIntro\n\n## Goals\n\nBody\n",
+                encoding="utf-8",
+            )
             (root / "_bmad-output/implementation-artifacts/stories/1-1-first-story.md").write_text(
                 "# First Story\n\nStory body\n",
                 encoding="utf-8",
@@ -47,6 +50,12 @@ class PlannerTests(unittest.TestCase):
             self.assertIn("create_doc", actions)
             self.assertIn("create_table", actions)
             self.assertEqual(plan.operations[0].action, "ensure_frame")
+            prd_sections = [artifact for artifact in plan.artifacts if artifact.source_artifact_id.endswith("prd.md")]
+            self.assertEqual([artifact.artifact_id for artifact in prd_sections], [
+                "_bmad-output/planning-artifacts/prd.md#prd",
+                "_bmad-output/planning-artifacts/prd.md#goals",
+            ])
+            self.assertEqual(prd_sections[1].parent_artifact_id, "_bmad-output/planning-artifacts/prd.md#prd")
 
     def test_existing_manifest_skips_unchanged_docs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -68,7 +77,10 @@ class PlannerTests(unittest.TestCase):
                         "item_id": "123",
                         "miro_url": "https://miro.com/app/board/x/?moveToWidget=123",
                         "title": artifact.title,
-                        "target_key": f"doc:{artifact.artifact_id}",
+                        "target_key": f"section:{artifact.artifact_id}",
+                        "source_artifact_id": artifact.source_artifact_id,
+                        "heading_level": artifact.heading_level,
+                        "parent_artifact_id": artifact.parent_artifact_id,
                         "updated_at": "2026-04-14T15:00:00Z",
                     }
                 ]
@@ -91,13 +103,16 @@ class PlannerTests(unittest.TestCase):
                 {
                     "items": [
                         {
-                            "artifact_id": "doc:test",
+                            "artifact_id": "doc:test#overview",
                             "artifact_sha256": "abc",
                             "item_type": "doc",
                             "item_id": "123",
                             "miro_url": "https://miro.com/x",
                             "title": "Test",
-                            "target_key": "doc:test",
+                            "target_key": "section:doc:test#overview",
+                            "source_artifact_id": "doc:test",
+                            "heading_level": 0,
+                            "parent_artifact_id": None,
                             "updated_at": "2026-04-14T15:00:00Z",
                         }
                     ]
@@ -105,7 +120,8 @@ class PlannerTests(unittest.TestCase):
             )
             path = save_manifest(root, config.manifest_path, updated)
             payload = json.loads(path.read_text(encoding="utf-8"))
-            self.assertIn("doc:test", payload["items"])
+            self.assertEqual(payload["version"], 2)
+            self.assertIn("doc:test#overview", payload["items"])
 
 
 if __name__ == "__main__":

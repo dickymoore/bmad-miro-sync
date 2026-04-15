@@ -15,9 +15,9 @@ class SyncManifest:
 def load_manifest(project_root: str | Path, manifest_path: str) -> SyncManifest:
     path = Path(project_root) / manifest_path
     if not path.exists():
-        return SyncManifest(version=1, items={})
+        return SyncManifest(version=2, items={})
     payload = json.loads(path.read_text(encoding="utf-8"))
-    return SyncManifest(version=payload.get("version", 1), items=payload.get("items", {}))
+    return SyncManifest(version=payload.get("version", 2), items=payload.get("items", {}))
 
 
 def save_manifest(project_root: str | Path, manifest_path: str, manifest: SyncManifest) -> Path:
@@ -43,5 +43,8 @@ def apply_results(
             "title": entry.get("title"),
             "updated_at": entry.get("updated_at"),
             "target_key": entry.get("target_key"),
+            "source_artifact_id": entry.get("source_artifact_id"),
+            "heading_level": entry.get("heading_level"),
+            "parent_artifact_id": entry.get("parent_artifact_id"),
         }
-    return SyncManifest(version=manifest.version, items=items)
+    return SyncManifest(version=max(manifest.version, 2), items=items)

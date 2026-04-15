@@ -1,6 +1,6 @@
 ---
 name: sync-bmad-to-miro
-description: Export a bmad-miro-sync plan bundle, execute it against Miro with Codex MCP tools, and persist sync results back into the repo manifest.
+description: Export a section-based bmad-miro-sync plan bundle, execute it against Miro with Codex MCP tools, and persist sync results back into the repo manifest.
 ---
 
 # Sync BMad To Miro
@@ -32,7 +32,7 @@ PYTHONPATH=src python3 -m bmad_miro_sync export-codex-bundle \
 
 4. Execute the operations in order using Codex Miro tools:
    - `ensure_frame` -> ensure the phase frame exists or create a suitable frame container
-   - `create_doc` / `update_doc` -> create or update a Miro doc with the provided markdown content
+   - `create_doc` / `update_doc` -> create or update one Miro doc per exported markdown section
    - `create_table` / `update_table` -> create or update a Miro table using the supplied columns and rows
    - `skip` -> do nothing
 
@@ -42,13 +42,16 @@ PYTHONPATH=src python3 -m bmad_miro_sync export-codex-bundle \
 {
   "items": [
     {
-      "artifact_id": "_bmad-output/planning-artifacts/prd.md",
+      "artifact_id": "_bmad-output/planning-artifacts/prd.md#overview",
       "artifact_sha256": "<sha256 from plan artifact>",
       "item_type": "doc",
       "item_id": "<miro item id>",
       "miro_url": "<full miro item url>",
-      "title": "PRD",
-      "target_key": "doc:_bmad-output/planning-artifacts/prd.md",
+      "title": "PRD / Overview",
+      "target_key": "section:_bmad-output/planning-artifacts/prd.md#overview",
+      "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+      "heading_level": 0,
+      "parent_artifact_id": null,
       "updated_at": "2026-04-14T15:00:00Z"
     }
   ]
@@ -67,6 +70,7 @@ PYTHONPATH=src python3 -m bmad_miro_sync apply-results \
 ## Rules
 
 - Treat local BMad artifacts as source of truth
+- Preserve manual Miro positioning and workflow grouping when updating existing section items
 - Do not duplicate Miro items when an existing mapping is available
 - Preserve `target_key` exactly as emitted by the plan
 - If an operation cannot be performed cleanly, stop and report the blocker instead of fabricating a result

@@ -7,6 +7,7 @@ from typing import Any
 @dataclass(slots=True)
 class ArtifactRecord:
     artifact_id: str
+    source_artifact_id: str
     kind: str
     title: str
     phase: str
@@ -14,6 +15,8 @@ class ArtifactRecord:
     content: str
     sha256: str
     source_type: str = "file"
+    heading_level: int = 0
+    parent_artifact_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -27,12 +30,15 @@ class PublishOperation:
     title: str
     phase: str
     artifact_id: str
+    source_artifact_id: str
     target_key: str
     content: str | None = None
     columns: list[dict[str, Any]] | None = None
     rows: list[dict[str, Any]] | None = None
     existing_item: dict[str, Any] | None = None
     status: str = "pending"
+    heading_level: int = 0
+    parent_artifact_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -46,11 +46,13 @@ def build_sync_plan(
                     title=phase.title(),
                     phase=phase,
                     artifact_id=f"phase:{phase}",
+                    source_artifact_id=f"phase:{phase}",
                     target_key=f"frame:{phase}",
                 )
             )
 
     stories_rows: list[dict[str, str]] = []
+    story_rows_seen: set[str] = set()
     for artifact in artifacts:
         if not getattr(config, PHASE_FLAGS.get(artifact.phase, "publish_planning"), True):
             continue
@@ -74,18 +76,22 @@ def build_sync_plan(
                 title=artifact.title,
                 phase=artifact.phase,
                 artifact_id=artifact.artifact_id,
-                target_key=f"doc:{artifact.artifact_id}",
+                source_artifact_id=artifact.source_artifact_id,
+                target_key=f"section:{artifact.artifact_id}",
                 content=artifact.content,
                 existing_item=existing_item,
                 status=status,
+                heading_level=artifact.heading_level,
+                parent_artifact_id=artifact.parent_artifact_id,
             )
         )
 
-        if artifact.kind == "story":
+        if artifact.kind == "story" and artifact.source_artifact_id not in story_rows_seen:
+            story_rows_seen.add(artifact.source_artifact_id)
             stories_rows.append(
                 {
-                    "Story": artifact.title,
-                    "Artifact ID": artifact.artifact_id,
+                    "Story": artifact.title.split(" / ", 1)[0],
+                    "Artifact ID": artifact.source_artifact_id,
                     "Path": artifact.relative_path,
                 }
             )
@@ -102,6 +108,7 @@ def build_sync_plan(
                 title="Implementation Stories",
                 phase="implementation",
                 artifact_id=story_key,
+                source_artifact_id=story_key,
                 target_key=story_key,
                 columns=[
                     {"column_type": "text", "column_title": "Story"},

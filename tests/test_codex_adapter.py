@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -38,6 +39,9 @@ class CodexAdapterTests(unittest.TestCase):
             self.assertTrue((output_dir / "codex-bundle.json").exists())
             self.assertTrue((output_dir / "instructions.md").exists())
             self.assertTrue((output_dir / "results.template.json").exists())
+            bundle = json.loads((output_dir / "codex-bundle.json").read_text(encoding="utf-8"))
+            self.assertEqual(bundle["artifacts"][0]["artifact_id"], "_bmad-output/planning-artifacts/prd.md#prd")
+            self.assertEqual(bundle["artifacts"][0]["source_artifact_id"], "_bmad-output/planning-artifacts/prd.md")
 
 
 if __name__ == "__main__":

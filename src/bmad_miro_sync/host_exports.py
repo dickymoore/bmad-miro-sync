@@ -25,13 +25,16 @@ def render_host_instructions(plan: SyncPlan, host: str) -> str:
             {
                 "items": [
                     {
-                        "artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                        "artifact_id": "_bmad-output/planning-artifacts/prd.md#overview",
                         "artifact_sha256": "<sha256 from plan artifact>",
                         "item_type": "doc",
                         "item_id": "<host item id>",
                         "miro_url": "<full miro item url>",
-                        "title": "PRD",
-                        "target_key": "doc:_bmad-output/planning-artifacts/prd.md",
+                        "title": "PRD / Overview",
+                        "target_key": "section:_bmad-output/planning-artifacts/prd.md#overview",
+                        "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                        "heading_level": 0,
+                        "parent_artifact_id": None,
                         "updated_at": "2026-04-14T15:00:00Z",
                     }
                 ]
@@ -49,7 +52,8 @@ def render_host_instructions(plan: SyncPlan, host: str) -> str:
                 "Codex usage:",
                 "- Load the plan JSON.",
                 "- For frame operations, use the Miro frame/doc/table creation tools as needed.",
-                "- For doc operations, create or update a Miro doc item with the markdown content.",
+                "- For doc operations, create or update one Miro doc item per exported markdown section.",
+                "- Preserve existing item positions and manual board organization when updating content.",
                 "- For table operations, create or update a Miro table with the supplied columns and rows.",
             ]
         )
@@ -83,11 +87,15 @@ def build_codex_bundle(plan: SyncPlan) -> dict:
         "artifacts": [
             {
                 "artifact_id": artifact.artifact_id,
+                "source_artifact_id": artifact.source_artifact_id,
                 "title": artifact.title,
                 "kind": artifact.kind,
                 "phase": artifact.phase,
                 "relative_path": artifact.relative_path,
                 "sha256": artifact.sha256,
+                "source_type": artifact.source_type,
+                "heading_level": artifact.heading_level,
+                "parent_artifact_id": artifact.parent_artifact_id,
             }
             for artifact in plan.artifacts
         ],
@@ -101,6 +109,9 @@ def build_codex_bundle(plan: SyncPlan) -> dict:
                     "miro_url": "<full miro item url>",
                     "title": "<created or updated title>",
                     "target_key": "<operation target key>",
+                    "source_artifact_id": "<source markdown file path>",
+                    "heading_level": "<0|1|2>",
+                    "parent_artifact_id": "<parent section id or null>",
                     "updated_at": "<ISO-8601 timestamp>",
                 }
             ]
