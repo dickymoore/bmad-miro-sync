@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 
-SYNC_POLICY_HEADER = """## BMad Miro Sync Policy
+SYNC_POLICY_BODY = (
+    "If this skill creates or updates `_bmad-output` artifacts or other stakeholder-facing project documentation, "
+    "invoke `bmad-miro-auto-sync` before considering the workflow complete unless the user explicitly says not to "
+    "sync. If the sync fails, report the blocker clearly."
+)
 
-If this skill creates or updates `_bmad-output` artifacts or other stakeholder-facing project documentation, invoke `bmad-miro-auto-sync` before considering the workflow complete unless the user explicitly says not to sync. If the sync fails, report the blocker clearly.
+SYNC_POLICY_HEADER = f"""## BMad Miro Sync Policy
+
+{SYNC_POLICY_BODY}
 """
+
+SYNC_POLICY_BLOCK_RE = re.compile(
+    r"(?ms)^## (?P<title>.+? Sync Policy)\n\n(?P<body>.+?)(?:\n{2,}|\Z)"
+)
 
 
 def render_config(board_url: str) -> str:
@@ -269,13 +280,33 @@ def ensure_gitignore_entries(existing: str) -> str:
 
 
 def insert_sync_policy(content: str) -> str:
-    if "## BMad Miro Sync Policy" in content:
+    content = _dedupe_sync_policy_blocks(content)
+    if SYNC_POLICY_BODY in content:
         return content
     frontmatter_end = content.find("---\n", 4)
     if content.startswith("---\n") and frontmatter_end != -1:
         insert_at = frontmatter_end + 4
         return content[:insert_at] + "\n" + SYNC_POLICY_HEADER + "\n" + content[insert_at:]
     return SYNC_POLICY_HEADER + "\n" + content
+
+
+def _dedupe_sync_policy_blocks(content: str) -> str:
+    seen_matching_policy = False
+    parts: list[str] = []
+    last_index = 0
+    for match in SYNC_POLICY_BLOCK_RE.finditer(content):
+        body = match.group("body").strip()
+        if body != SYNC_POLICY_BODY:
+            continue
+        parts.append(content[last_index:match.start()])
+        if not seen_matching_policy:
+            parts.append(match.group(0).rstrip() + "\n\n")
+            seen_matching_policy = True
+        last_index = match.end()
+    if not seen_matching_policy:
+        return content
+    parts.append(content[last_index:])
+    return "".join(parts).rstrip() + "\n"
 
 
 def skill_files(root: Path) -> list[Path]:

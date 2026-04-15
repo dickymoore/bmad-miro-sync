@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from bmad_miro_sync.installer import install_project
+from bmad_miro_sync.templates import SYNC_POLICY_BODY
 
 
 class InstallerTests(unittest.TestCase):
@@ -78,6 +79,56 @@ class InstallerTests(unittest.TestCase):
                 'board_url = "https://miro.com/app/board/original=/"\nsource_root = "_bmad-output"\n',
             )
             self.assertIn('uXjVGixS6vQ', config_path.read_text(encoding="utf-8"))
+
+    def test_install_does_not_duplicate_equivalent_project_sync_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".agents/skills/bmad-create-prd").mkdir(parents=True)
+            skill = root / ".agents/skills/bmad-create-prd/SKILL.md"
+            skill.write_text(
+                "---\nname: bmad-create-prd\ndescription: test\n---\n\n"
+                "## FluidScan Sync Policy\n\n"
+                f"{SYNC_POLICY_BODY}\n\n"
+                "Follow the instructions.\n",
+                encoding="utf-8",
+            )
+
+            result = install_project(
+                root,
+                "https://miro.com/app/board/uXjVGixS6vQ=/",
+                sync_src="/tmp/bmad-miro-sync/src",
+            )
+
+            self.assertEqual(result.patched_skills, [])
+            updated = skill.read_text(encoding="utf-8")
+            self.assertIn("## FluidScan Sync Policy", updated)
+            self.assertNotIn("## BMad Miro Sync Policy", updated)
+            self.assertEqual(updated.count(SYNC_POLICY_BODY), 1)
+
+    def test_install_dedupes_existing_matching_sync_policies(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".agents/skills/bmad-create-prd").mkdir(parents=True)
+            skill = root / ".agents/skills/bmad-create-prd/SKILL.md"
+            skill.write_text(
+                "---\nname: bmad-create-prd\ndescription: test\n---\n\n"
+                "## BMad Miro Sync Policy\n\n"
+                f"{SYNC_POLICY_BODY}\n\n"
+                "## FluidScan Sync Policy\n\n"
+                f"{SYNC_POLICY_BODY}\n\n"
+                "Follow the instructions.\n",
+                encoding="utf-8",
+            )
+
+            result = install_project(
+                root,
+                "https://miro.com/app/board/uXjVGixS6vQ=/",
+                sync_src="/tmp/bmad-miro-sync/src",
+            )
+
+            self.assertIn(skill, result.patched_skills)
+            updated = skill.read_text(encoding="utf-8")
+            self.assertEqual(updated.count(SYNC_POLICY_BODY), 1)
 
 
 if __name__ == "__main__":
