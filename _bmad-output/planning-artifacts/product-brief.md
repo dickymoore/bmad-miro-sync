@@ -2,92 +2,92 @@
 
 ## Summary
 
-`bmad-miro-sync` is a reusable synchronization tool that publishes BMad Method outputs into Miro so non-operator stakeholders can see current project artifacts in a shared visual workspace. The product is designed as a hybrid: a host-neutral sync engine plus host-specific wrappers, with Codex support first and an extension path for other MCP-capable environments such as Claude Code and Gemini CLI.
+`bmad-miro-sync` is a collaboration layer that makes BMAD planning and solutioning usable inside Miro for teams that include non-CLI participants. The product is not a generic file publisher. It is a structured shared workspace for business analysts, product owners, scrum masters, UX and design stakeholders, and delivery leads to review, comment on, organize, and progress BMAD artifacts without needing to work in a terminal session.
 
-The core problem is visibility. BMad artifacts are structured and useful, but they normally live inside local repo folders such as `_bmad-output/planning-artifacts` and `_bmad-output/implementation-artifacts`. That is workable for the operator driving the workflow, but weak for stakeholders who need lightweight access, visual organization, and a persistent shared surface for review. Miro already serves that collaboration role. `bmad-miro-sync` bridges the gap by making BMad outputs continuously publishable into a well-structured Miro board.
+The sync engine remains important, but only as enabling infrastructure. Its job is to keep BMAD artifacts and Miro views aligned so collaboration can happen around stable, reviewable representations of the work. The product value is the collaboration loop: publish into Miro, orient stakeholders, capture structured feedback, route decisions back into BMAD, and keep planning artifacts moving toward implementation readiness.
 
 ## Problem
 
-Teams using BMad often need to share evolving artifacts with people who are not working directly inside the repository or agent host. Today that usually means ad hoc copy-paste, screenshots, or manual exports. Those approaches fail because they are inconsistent, drift quickly, and do not preserve a reliable mapping between the canonical artifact and what stakeholders are reviewing.
+BMAD workflows work well for operators and agent-driven planning, but the surrounding product and delivery team often lives outside the CLI. In practice, those stakeholders need to:
 
-The result is predictable:
+- understand the current state of a product brief, PRD, UX direction, architecture, and story plan
+- add feedback in a shared visual workspace
+- see which decisions are open, accepted, rejected, or unresolved
+- collaborate across design and delivery perspectives without asking one operator to manually relay every update
 
-- stakeholders read outdated documents
-- architecture and story planning lose traceability
-- implementation status is harder to understand
-- review feedback happens in parallel surfaces without a clean sync loop
+The Miro tests in `fluidscan` validated that raw artifact export is helpful but insufficient on its own. Section-level docs, stable identities, and repeatable sync reduced drift, but they did not yet provide enough support for review workflows, stakeholder orientation, decision capture, or backlog shaping. A file dump into Miro improves visibility. It does not solve collaboration.
 
 ## Users
 
 Primary users:
 
-- operators running BMad workflows in Codex, and later other host environments
-- product and delivery leads who want planning and implementation artifacts visible in Miro
-- technical stakeholders who want architecture, stories, and status represented in a readable board
+- business analysts shaping requirements and acceptance criteria
+- product owners and product managers driving scope and prioritization
+- scrum masters and delivery leads coordinating readiness and handoff
+- UX and design stakeholders reviewing flows, artifacts, and decisions
+- BMAD operators who need a reliable collaboration surface for non-CLI teammates
 
 Secondary users:
 
-- maintainers who want a reusable publishing tool for multiple BMad repos
-- teams who want CI-friendly publishing for shared project boards
+- architects and engineering leads validating technical direction
+- sponsors and reviewers who need structured visibility into planning progress
 
 ## Product Goal
 
-Create a reusable tool that reads BMad artifacts from a repository and publishes them into a deterministic Miro board structure with stable item identity, low duplication, and safe repeatable updates.
+Create a Miro-based BMAD collaboration layer that enables design-focused and delivery-focused stakeholders to participate in planning and solutioning work through shared, structured, traceable workflows.
 
 ## Non-Goals For MVP
 
-- editing Miro content and automatically writing those edits back into BMad artifacts
-- full workflow orchestration for every agent host on day one
-- support for arbitrary non-BMad documentation formats
-- a complex multi-board program management layer
+- a full bidirectional rich-text editor for every BMAD artifact
+- replacing BMAD as the source of truth
+- turning Miro into a generic document management system
+- broad program portfolio management across many boards
+- implementation orchestration inside Miro
 
 ## MVP Scope
 
 The MVP should support:
 
-- local configuration via a repo file such as `.bmad-miro.yaml`
-- reading `_bmad-output/planning-artifacts` and `_bmad-output/implementation-artifacts`
-- publishing key artifact classes to Miro:
-  - product brief
-  - PRD
-  - UX design
-  - architecture
-  - epics and stories
-  - readiness and validation reports
-  - sprint status
-  - individual story files
-- deterministic Miro layout by phase
-- idempotent updates using a local sync manifest that stores Miro item IDs
-- a CLI entrypoint usable from local development or CI
-- a Codex-friendly wrapper or instructions for direct use inside Codex sessions
+- publishing BMAD planning artifacts into a deterministic Miro collaboration space
+- stable artifact and section identity so updates preserve context and comments
+- board structure that separates analysis, planning, solutioning, and implementation-readiness views
+- role-aware views for product, UX, and delivery collaboration
+- structured review loops:
+  - comment capture
+  - decision triage
+  - status markers for open, resolved, deferred, and blocked items
+- import of normalized Miro feedback back into BMAD review artifacts
+- lightweight facilitation affordances such as review queues, readiness markers, and handoff summaries
+- a Codex-first operating path with room for other hosts later
 
 ## Product Shape
 
-The product should be hybrid by design:
+The product has three visible layers:
 
-- a core sync engine that knows how to discover artifacts, classify them, transform them, and publish them
-- a CLI wrapper for normal shell usage and automation
-- thin host adapters for agent environments that can invoke the CLI or the shared library
+1. Collaboration workspace model
+2. Sync and traceability engine
+3. Host-specific operating path
 
-This keeps the system usable even in hosts that do not expose identical tool APIs while still allowing first-class support where MCP-backed Miro actions are available.
+The collaboration workspace model defines how artifacts appear in Miro, how stakeholders review them, and how decisions move forward. The sync and traceability engine keeps local BMAD outputs and Miro representations aligned. The host-specific operating path lets a BMAD operator execute the loop from Codex first, then other hosts later.
 
 ## Success Criteria
 
 The MVP is successful if:
 
-- a BMad repo can be configured in minutes
-- running the sync repeatedly updates the same Miro items instead of duplicating them
-- a stakeholder can open one board and understand the current project state
-- Codex users can adopt it immediately
-- later host support can be added without redesigning the core sync engine
+- a non-CLI stakeholder can understand the current BMAD state from Miro without operator translation
+- product, UX, and delivery feedback can be captured and routed back into BMAD with low ambiguity
+- repeated syncs preserve artifact identity, comments, and board organization
+- teams can move from product brief through solutioning with clear readiness signals
+- the collaboration model works in a live testbed repo such as `fluidscan` and generalizes to other BMAD projects
 
 ## Risks
 
-- Miro markdown and structured document capabilities may not map perfectly to all BMad artifact formats
-- some hosts may not offer equivalent integration affordances, so wrappers must degrade gracefully
-- board structure can become noisy if artifact-to-item rules are not opinionated enough
-- bi-directional sync pressure may appear early even though it should be explicitly deferred
+- Miro can become a cluttered artifact graveyard if collaboration states and review flows are not opinionated
+- if comments are ingested without triage structure, review noise will overwhelm planning artifacts
+- teams may assume Miro is the source of truth unless traceability rules are explicit
+- delivery stakeholders and design stakeholders may need different information density on the same board
+- host-specific limitations may constrain how much workflow automation can happen in a single run
 
 ## Initial Direction
 
-Codex should be the first supported host because it already works with Miro MCP in the current environment. The architecture should still remain host-neutral so the sync engine can later be wrapped for Claude Code, Gemini CLI, or plain shell usage without reworking the core publishing model.
+Codex remains the first supported operating path because it can run BMAD workflows and Miro actions in one environment. `fluidscan` remains a separate testbed repo used to validate collaboration patterns, board structure, feedback ingest, and readiness workflows before those patterns are formalized in `bmad-miro-sync`.

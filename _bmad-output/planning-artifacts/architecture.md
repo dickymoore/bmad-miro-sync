@@ -2,164 +2,187 @@
 
 ## 1. Purpose
 
-`bmad-miro-sync` provides a reusable synchronization layer between BMad artifacts in a local repository and a structured Miro board. The design must support immediate use from Codex while remaining independent enough to work from other agent hosts or standard CLI execution.
+`bmad-miro-sync` provides a collaboration architecture for BMAD in Miro. The system must support publication, review, decision capture, and handoff across planning and solutioning while preserving BMAD artifacts in the repository as the canonical source.
 
 ## 2. Architectural Drivers
 
-- BMad artifacts in `_bmad-output` remain the source of truth
-- publishing must be idempotent and update existing Miro items
+- BMAD artifacts in `_bmad-output` remain the source of truth
+- collaboration must be structured, not just visible
+- repeated syncs must preserve stable identity for sections and review context
+- Miro must support different stakeholder lenses without fragmenting the truth
+- feedback must be routable back into BMAD review artifacts and readiness outputs
 - host-specific logic must stay thin
-- local configuration must be simple and portable across repos
-- the MVP should support docs and tables first, with diagram support where practical
 
-## 3. High-Level Design
+## 3. Lessons From The `fluidscan` Miro Testbed
 
-The system is split into three layers:
+The `fluidscan` validation runs produced four architecture-level lessons:
 
-1. Core sync engine
-2. Delivery interfaces
-3. State and configuration
+1. Section-level export is necessary because whole-document dumps are too coarse for focused review.
+2. Stable IDs and repeatable updates are necessary because duplicated artifacts destroy review continuity.
+3. Pure publishing is insufficient because stakeholders still need orientation, review states, and decision pathways.
+4. Comment ingest is valuable, but without triage and routing the output remains a passive transcript rather than collaboration progress.
 
-### 3.1 Core Sync Engine
+These lessons shift the product from "sync engine with wrappers" to "collaboration system powered by sync and traceability."
 
-The core engine is host-neutral and owns the synchronization logic:
+## 4. High-Level Design
+
+The system is split into four layers:
+
+1. Artifact and sync core
+2. Collaboration model
+3. Review and decision pipeline
+4. Delivery interfaces
+
+### 4.1 Artifact And Sync Core
+
+This layer remains host-neutral and owns:
 
 - artifact discovery
+- section normalization
 - artifact classification
-- board layout planning
-- content transformation
-- Miro publish and update decisions
-- sync manifest persistence
+- content hashing and stable identity
+- manifest persistence
+- Miro operation planning
 
-This layer should not depend on Codex-specific abstractions.
+### 4.2 Collaboration Model
 
-### 3.2 Delivery Interfaces
+This layer defines how BMAD artifacts become collaborative objects in Miro:
 
-Delivery interfaces call the core engine:
+- board zones by BMAD phase
+- artifact collections by workstream
+- review metadata
+- readiness markers
+- stakeholder-specific views and labels
+
+It is the product-defining layer.
+
+### 4.3 Review And Decision Pipeline
+
+This layer turns passive comments into actionable planning input:
+
+- inbound comment capture
+- normalized review bundles
+- issue grouping by artifact, section, and topic
+- decision status lifecycle:
+  - open
+  - accepted
+  - deferred
+  - resolved
+  - blocked
+- outbound handoff summaries for PM, UX, architect, and developer workflows
+
+### 4.4 Delivery Interfaces
+
+Delivery interfaces call the same shared application services:
 
 - CLI interface
 - Codex adapter
 - future adapters for Claude Code, Gemini CLI, or CI runners
 
-The CLI is the primary public entrypoint. Host adapters should call the same internal application service to avoid divergence.
+## 5. Core Domain Model
 
-### 3.3 State and Configuration
+Proposed internal concepts:
 
-Each adopting repo supplies local configuration, for example `.bmad-miro.yaml`, and keeps a local sync manifest such as `.bmad-miro-sync/state.json`.
+- `ArtifactSource`: locates candidate BMAD files
+- `ArtifactRecord`: normalized representation of one source artifact or section
+- `ArtifactClassifier`: maps artifacts to BMAD and collaboration types
+- `BoardPlan`: intended board structure and object placement
+- `CollaborationObject`: reviewable Miro object with state metadata
+- `ReviewSignal`: normalized stakeholder feedback tied to an artifact or section
+- `DecisionRecord`: tracked outcome for a review item
+- `ReadinessSummary`: aggregated planning status for a workflow stage
+- `SyncManifestStore`: persistent mapping between source artifacts and Miro objects
+- `MiroPublisher`: narrow execution boundary for Miro actions
+
+## 6. Collaboration Workspace Model
+
+The default board model should create durable collaboration zones:
+
+- Analysis
+- Planning
+- Solutioning
+- Implementation Readiness
+- Delivery Feedback
+
+Within each zone, the workspace should support:
+
+- anchor artifacts such as brief, PRD, UX, architecture, and epics
+- review clusters for stakeholder comments and issues
+- decision markers and summary tables
+- readiness indicators for unresolved gaps and blocked handoffs
+
+The model must preserve manual board organization where users improve local readability.
+
+## 7. Artifact Mapping Strategy
+
+Initial mapping should favor clarity and reviewability:
+
+- product brief, PRD, architecture, research, and UX sections -> Miro docs
+- epics and story summaries -> docs or tables depending on density
+- decision registers and readiness summaries -> tables
+- review bundles -> docs grouped by artifact and topic
+
+The system should map artifacts according to collaboration intent, not only file type.
+
+## 8. Review Lifecycle
+
+The review lifecycle should be explicit:
+
+1. publish or update artifact sections
+2. orient stakeholders with phase and workstream structure
+3. capture comments or structured review items
+4. normalize signals back into BMAD review artifacts
+5. triage into decisions, follow-ups, or unresolved questions
+6. emit readiness and handoff summaries
+
+This lifecycle is a first-class architectural concern, not an optional add-on.
+
+## 9. State And Configuration
+
+Each adopting repo supplies local configuration, for example `.bmad-miro.toml`, and keeps local state such as `.bmad-miro-sync/state.json`.
 
 Configuration should include:
 
 - Miro board URL
 - source paths
 - enabled artifact classes
-- layout preferences
-- naming overrides
+- board layout preferences
+- collaboration modes to enable
+- review and readiness output preferences
 
-The sync manifest should include:
+State should include:
 
-- artifact identity
-- content hash or change fingerprint
-- mapped Miro item URL or ID
-- item type
+- artifact identity and content fingerprint
+- mapped Miro item ID and URL
+- parent-child relationships between sections
+- review metadata references where available
 - last sync timestamp
 
-## 4. Core Domain Model
+## 10. Miro Integration Boundary
 
-Proposed internal concepts:
+The Miro boundary stays encapsulated. The core should prepare normalized operations and interpret results, while the host path executes actual Miro actions. This preserves portability and keeps collaboration logic independent from one runtime.
 
-- `ArtifactSource`: locates candidate files in BMad output directories
-- `ArtifactRecord`: normalized representation of one source artifact
-- `ArtifactClassifier`: maps files to logical artifact types
-- `BoardPlan`: intended Miro structure for this sync run
-- `PublishOperation`: create, update, skip, or warn action for a target item
-- `SyncManifestStore`: reads and writes local sync state
-- `MiroPublisher`: executes Miro operations behind a narrow interface
+## 11. MVP Decisions
 
-## 5. Artifact Mapping Strategy
+- repository artifacts remain canonical
+- sync is primarily repo-to-Miro, with structured feedback returning as review artifacts rather than direct in-place edits
+- collaboration states are part of the product
+- Codex is the first operating path
+- `fluidscan` is the primary validation repo for collaboration behavior
+- readiness outputs are required before implementation handoff
 
-Initial artifact mapping:
+## 12. Open Decisions
 
-- markdown narrative artifacts -> Miro docs
-- sprint and status artifacts -> Miro tables or docs, depending on available structure
-- architecture diagrams -> generated Miro diagrams where source structure is explicit enough, otherwise docs
-- story collections -> Miro table rows or per-story docs
+- best default representation for story planning: section docs, table summaries, or a hybrid
+- whether decision status should live in a dedicated table, inline labels, or both
+- how much facilitation metadata should be authored automatically versus manually
+- how to support multi-board programs without breaking single-board clarity
 
-The MVP should prefer reliable readability over ambitious transformation. If a source file cannot be transformed confidently into a richer visual type, publish it as a doc first.
+## 13. Recommended Solutioning Sequence
 
-## 6. Board Layout Convention
-
-Default board layout should create phase frames:
-
-- Analysis
-- Planning
-- Solutioning
-- Implementation
-
-Within each frame, create stable sections for:
-
-- core artifacts
-- validation and review outputs
-- active implementation status
-
-The layout must be deterministic so repeated syncs do not drift across the board.
-
-## 7. Miro Integration Boundary
-
-The Miro boundary should be encapsulated behind a publisher interface. The first implementation can target environments where Miro MCP tools are available. The engine should not assume that every caller can directly invoke those tools.
-
-Two execution modes should be anticipated:
-
-1. In-process host mode
-   A host adapter can call Miro tools directly and pass results back into the engine.
-
-2. External driver mode
-   A wrapper or automation layer executes sync actions and passes normalized results into the engine.
-
-This design protects the core from coupling to a single agent runtime.
-
-## 8. Packaging Recommendation
-
-Use a small Python project:
-
-- core library package
-- CLI executable
-- optional host adapter modules
-
-Python is a reasonable fit because the repo logic is file-heavy, manifest-heavy, and orchestration-heavy rather than UI-heavy. It is also straightforward to package for local shell usage and CI.
-
-## 9. Operational Flow
-
-1. Load config
-2. Discover artifacts
-3. Classify and normalize content
-4. Read sync manifest
-5. Compute desired board layout and publish plan
-6. Create or update Miro items
-7. Persist updated manifest
-8. Report results
-
-## 10. MVP Decisions
-
-- Source of truth is always local BMad artifacts
-- Sync is one-way from repo to Miro
-- CLI is the primary stable interface
-- Codex is the first supported host
-- Host adapters remain thin wrappers around shared application logic
-- Docs and tables come before advanced diagram generation
-
-## 11. Open Decisions
-
-- exact config schema and defaults
-- story representation choice: one table versus one doc per story
-- whether status artifacts should always become tables or stay as docs unless explicitly configured
-- how to support hosts that cannot directly access Miro tooling but can still invoke the CLI
-
-## 12. Recommended Implementation Order
-
-1. scaffold core package and CLI
-2. define config schema and manifest schema
-3. implement artifact discovery and classification
-4. implement doc publishing
-5. implement table publishing for sprint and story status
-6. add Codex-focused usage path
-7. add additional host adapters once the core model is stable
+1. validate collaboration jobs and stakeholder roles
+2. define board information architecture and UX flows
+3. finalize artifact and review object schemas
+4. define decision and readiness data model
+5. refine sync planning and host execution around the collaboration model
+6. only then move to implementation planning
