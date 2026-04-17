@@ -89,6 +89,14 @@ python3 -m bmad_miro_sync export-codex-bundle \\
 - `update_table`
 - `skip`
 
+If the exported plan includes `ensure_frame` operations but the available Miro tools cannot create frames, do not ask the user to decide between a partial sync and a clean sync. Instead:
+
+1. update `{config_path}` so `[layout].create_phase_frames = false`
+2. re-run the export command above to regenerate the bundle
+3. continue from the regenerated plan and treat that new plan as the source of truth for the sync run
+
+Only proceed with a partial results file when the user explicitly wants a partial sync.
+
 4. Write:
 
 - `{runtime_dir}/results.json`
@@ -240,6 +248,7 @@ python3 -m bmad_miro_sync apply-results \\
 - Local BMad artifacts remain the source of truth.
 - Miro item mappings are stored in `.bmad-miro-sync/state.json`.
 - Runtime sync files are ignored by git.
+- If the current Miro tool surface cannot create frames, set `[layout].create_phase_frames = false`, regenerate the bundle, and continue from the new plan rather than asking the user to choose a partial run.
 
 ## Codex Workflow
 

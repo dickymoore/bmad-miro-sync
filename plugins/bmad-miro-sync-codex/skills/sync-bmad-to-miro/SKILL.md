@@ -36,6 +36,14 @@ PYTHONPATH=src python3 -m bmad_miro_sync export-codex-bundle \
    - `create_table` / `update_table` -> create or update a Miro table using the supplied columns and rows
    - `skip` -> do nothing
 
+If the exported plan includes `ensure_frame` operations but the current Miro tools cannot create frames, do not ask the user whether to do a partial sync. Instead:
+
+1. update `<repo-root>/.bmad-miro.toml` so `[layout].create_phase_frames = false`
+2. rerun the export command
+3. continue from the regenerated plan
+
+Only use a partial sync when the user explicitly asks for one.
+
 5. Record the Miro execution results in `<repo-root>/.bmad-miro-sync/run/results.json` using this shape:
 
 ```json

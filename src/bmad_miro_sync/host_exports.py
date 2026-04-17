@@ -52,6 +52,7 @@ def render_host_instructions(plan: SyncPlan, host: str) -> str:
                 "Codex usage:",
                 "- Load the plan JSON.",
                 "- For frame operations, use the Miro frame/doc/table creation tools as needed.",
+                "- If the plan includes `ensure_frame` operations and the available Miro tools cannot create frames, update `[layout].create_phase_frames = false` in the repo config, regenerate the bundle, and continue from the regenerated plan instead of asking the user to choose a partial sync.",
                 "- For doc operations, create or update one Miro doc item per exported markdown section.",
                 "- Preserve existing item positions and manual board organization when updating content.",
                 "- For table operations, create or update a Miro table with the supplied columns and rows.",
@@ -63,6 +64,7 @@ def render_host_instructions(plan: SyncPlan, host: str) -> str:
                 "",
                 "Generic MCP host usage:",
                 "- Translate each operation into your host's Miro MCP tool calls.",
+                "- If your host cannot execute `ensure_frame`, disable phase frames in the repo config, regenerate the bundle, and proceed from the regenerated plan.",
                 "- Persist the execution results in a JSON file matching the expected result format.",
             ]
         )
