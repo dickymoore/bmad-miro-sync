@@ -6,6 +6,7 @@ from pathlib import Path
 from .templates import (
     ensure_gitignore_entries,
     insert_sync_policy,
+    render_collaboration_skill,
     render_comment_ingest_skill,
     render_config,
     render_doc,
@@ -37,6 +38,7 @@ def install_project(
     runtime_dir = root / ".bmad-miro-sync" / "run"
     skill_path = root / ".agents" / "skills" / "bmad-miro-auto-sync" / "SKILL.md"
     comment_skill_path = root / ".agents" / "skills" / "bmad-ingest-miro-comments" / "SKILL.md"
+    collaboration_skill_path = root / ".agents" / "skills" / "run-codex-collaboration-workflow" / "SKILL.md"
     doc_path = root / "docs" / "miro-sync.md"
     gitignore_path = root / ".gitignore"
 
@@ -47,6 +49,7 @@ def install_project(
 
     skill_path.parent.mkdir(parents=True, exist_ok=True)
     comment_skill_path.parent.mkdir(parents=True, exist_ok=True)
+    collaboration_skill_path.parent.mkdir(parents=True, exist_ok=True)
     doc_path.parent.mkdir(parents=True, exist_ok=True)
 
     rendered_config = render_config(board_url)
@@ -70,6 +73,12 @@ def install_project(
         encoding="utf-8",
     )
     written_files.append(comment_skill_path)
+
+    collaboration_skill_path.write_text(
+        render_collaboration_skill(str(root), sync_src, str(config_path), str(runtime_dir), project_name),
+        encoding="utf-8",
+    )
+    written_files.append(collaboration_skill_path)
 
     doc_path.write_text(
         render_doc(str(root), sync_src, str(config_path), str(runtime_dir), board_url),

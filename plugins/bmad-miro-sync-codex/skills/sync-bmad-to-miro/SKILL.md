@@ -27,18 +27,22 @@ PYTHONPATH=src python3 -m bmad_miro_sync export-codex-bundle \
 
 3. Read:
    - `<repo-root>/.bmad-miro-sync/run/plan.json`
+   - `<repo-root>/.bmad-miro-sync/run/publish-bundle.json`
    - `<repo-root>/.bmad-miro-sync/run/codex-bundle.json`
    - `<repo-root>/.bmad-miro-sync/run/instructions.md`
 
+`publish-bundle.json` is the host-neutral publish contract. `codex-bundle.json` is a backward-compatible alias for the Codex workflow.
+
 4. Execute the operations in order using Codex Miro tools:
-   - `ensure_frame` -> ensure the phase frame exists or create a suitable frame container
+   - `ensure_zone` -> ensure the phase-zone container exists or create the best available board-level equivalent
+   - `ensure_workstream_anchor` -> ensure the workstream anchor/container exists inside its phase zone
    - `create_doc` / `update_doc` -> create or update one Miro doc per exported markdown section
    - `create_table` / `update_table` -> create or update a Miro table using the supplied columns and rows
    - `skip` -> do nothing
 
-If the exported plan includes `ensure_frame` operations but the current Miro tools cannot create frames, do not ask the user whether to do a partial sync. Instead:
+If the exported plan includes `ensure_zone` operations but the current Miro tools cannot create board-level containers, do not ask the user whether to do a partial sync. Instead:
 
-1. update `<repo-root>/.bmad-miro.toml` so `[layout].create_phase_frames = false`
+1. update `<repo-root>/.bmad-miro.toml` so `[object_strategies].phase_zone = "workstream_anchor"`
 2. rerun the export command
 3. continue from the regenerated plan
 
@@ -48,23 +52,42 @@ Only use a partial sync when the user explicitly asks for one.
 
 ```json
 {
+  "run_status": "complete",
+  "executed_at": "2026-04-17T22:40:00Z",
   "items": [
     {
+      "op_id": "doc:_bmad-output/planning-artifacts/prd.md#overview",
       "artifact_id": "_bmad-output/planning-artifacts/prd.md#overview",
-      "artifact_sha256": "<sha256 from plan artifact>",
+      "artifact_sha256": "<sha256 from plan artifact; null for zone/workstream scaffolding>",
       "item_type": "doc",
       "item_id": "<miro item id>",
       "miro_url": "<full miro item url>",
       "title": "PRD / Overview",
-      "target_key": "section:_bmad-output/planning-artifacts/prd.md#overview",
+      "target_key": "artifact:_bmad-output/planning-artifacts/prd.md#overview",
       "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+      "phase_zone": "planning",
+      "workstream": "product",
+      "collaboration_intent": "anchor",
+      "container_target_key": "workstream:planning:product",
       "heading_level": 0,
       "parent_artifact_id": null,
+      "section_path": ["overview"],
+      "section_title_path": ["Overview"],
+      "section_slug": "overview",
+      "section_sibling_index": 1,
+      "lineage_key": "<stable lineage key>",
+      "lineage_status": "new",
+      "previous_artifact_id": null,
+      "previous_parent_artifact_id": null,
+      "execution_status": "created",
+      "error": null,
       "updated_at": "2026-04-14T15:00:00Z"
     }
   ]
 }
 ```
+
+If only part of the plan executes, set `"run_status": "partial"` and include only the operations that actually ran. `apply-results` will keep the rest marked pending in `.bmad-miro-sync/state.json`.
 
 6. Apply the results:
 
@@ -81,4 +104,5 @@ PYTHONPATH=src python3 -m bmad_miro_sync apply-results \
 - Preserve manual Miro positioning and workflow grouping when updating existing section items
 - Do not duplicate Miro items when an existing mapping is available
 - Preserve `target_key` exactly as emitted by the plan
+- When an operation exports `degraded = true`, execute `resolved_item_type` and preserve the fallback metadata in the result entry
 - If an operation cannot be performed cleanly, stop and report the blocker instead of fabricating a result

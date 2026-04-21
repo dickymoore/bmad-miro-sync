@@ -35,6 +35,7 @@ The installer creates:
 
 - `.bmad-miro.toml`
 - `.agents/skills/bmad-miro-auto-sync/SKILL.md`
+- `.agents/skills/run-codex-collaboration-workflow/SKILL.md`
 - `docs/miro-sync.md`
 - `.gitignore` entry for `.bmad-miro-sync/`
 
@@ -47,12 +48,14 @@ The current MVP provides:
 - artifact discovery from `_bmad-output`
 - section-level markdown splitting for more navigable Miro publishing
 - artifact classification and deterministic sync planning
-- local manifest persistence to avoid duplicate publishing
+- inspectable local publish state persistence to avoid duplicate publishing and preserve retryable partial runs
 - host-neutral operation export for MCP-capable hosts
 - Codex-oriented instruction rendering
 - normalized Miro comment ingestion into BMAD review artifacts
+- explicit decision-record generation from normalized review bundles plus operator triage
+- deterministic implementation-readiness and handoff generation from canonical decision sidecars
 
-The current implementation does not directly call Miro from the Python CLI. Instead it exports a sync plan that a host such as Codex can execute using its Miro MCP tools, then records the results back into the local manifest.
+The current implementation does not directly call Miro from the Python CLI. Instead it exports a sync plan that a host such as Codex can execute using its Miro MCP tools, then reconciles the results back into `.bmad-miro-sync/state.json` using the exported runtime plan as the source of truth.
 
 ## Codex Plugin
 
@@ -60,10 +63,10 @@ A repo-local Codex plugin scaffold is included under [plugins/bmad-miro-sync-cod
 
 The plugin provides a Codex skill that:
 
-- exports a sync bundle
-- executes the plan with Codex Miro tools
-- writes `results.json`
-- applies the results back into `.bmad-miro-sync/state.json`
+- seeds the repo-local collaboration workflow report
+- exports the publish bundle for Codex Miro execution
+- resumes the workflow through apply, ingest, triage, and readiness stages
+- keeps the full collaboration loop inspectable under `.bmad-miro-sync/run/`
 
 ## Configuration
 
@@ -74,6 +77,35 @@ cp .bmad-miro.example.toml .bmad-miro.toml
 ```
 
 Then set `board_url` to the target Miro board.
+
+Discovery defaults to `source_root`, but you can override it with a dedicated `[discovery]` block:
+
+```toml
+[discovery]
+source_paths = ["_bmad-output/planning-artifacts", "_bmad-output/implementation-artifacts", "_bmad-output/review-artifacts"]
+required_artifact_classes = ["prd", "ux_design", "architecture"]
+```
+
+`source_paths` are scanned in order. Keep `_bmad-output/review-artifacts` in the override set if later review bundles such as `decision-records.md` should stay publishable. If both a whole markdown file and a sharded `index.md` variant exist for the same artifact, discovery keeps the whole document and records the skipped shard in the exported plan metadata.
+
+Repeat syncs use a single lifecycle policy for content that disappeared from the source set:
+
+```toml
+[sync]
+removed_item_policy = "archive" # or "remove"
+```
+
+`archive` is the default and keeps the last known Miro identity in local state while planning an archival operation for the host. `remove` plans a deletion/removal operation but still retains the last known mapping and metadata in `.bmad-miro-sync/state.json` for traceability.
+
+Degraded-mode object fallback is explicit and inspectable:
+
+```toml
+[object_strategies]
+phase_zone = "workstream_anchor" # default: "zone"
+story_summary = "doc"            # default: "table"
+```
+
+The legacy `layout.create_phase_frames` and `publish.stories_table` booleans still load for backward compatibility, but the exported plan, bundle, runtime results, and local state now record preferred versus resolved item types plus fallback warnings through the object-strategy contract.
 
 ## Commands
 
@@ -101,10 +133,16 @@ Export a full Codex execution bundle:
 PYTHONPATH=src python3 -m bmad_miro_sync export-codex-bundle --project-root . --config .bmad-miro.toml --output-dir .bmad-miro-sync/run
 ```
 
-Apply host execution results to the manifest:
+Run the combined Codex-first collaboration workflow:
 
 ```bash
-PYTHONPATH=src python3 -m bmad_miro_sync apply-results --project-root . --config .bmad-miro.toml --results results.json
+PYTHONPATH=src python3 -m bmad_miro_sync run-codex-collaboration-workflow --project-root . --config .bmad-miro.toml --stop-after publish
+```
+
+Apply host execution results to the manifest/state file:
+
+```bash
+PYTHONPATH=src python3 -m bmad_miro_sync apply-results --project-root . --config .bmad-miro.toml --results .bmad-miro-sync/run/results.json
 ```
 
 Ingest normalized Miro comments into a review artifact:
@@ -113,17 +151,68 @@ Ingest normalized Miro comments into a review artifact:
 PYTHONPATH=src python3 -m bmad_miro_sync ingest-comments --project-root . --config .bmad-miro.toml --comments .bmad-miro-sync/run/comments.json
 ```
 
+Produce decision records from normalized review input plus explicit triage:
+
+```bash
+PYTHONPATH=src python3 -m bmad_miro_sync triage-feedback --project-root . --config .bmad-miro.toml --input .bmad-miro-sync/run/review-input.json
+```
+
+Generate readiness summary and handoff outputs from canonical decision data:
+
+```bash
+PYTHONPATH=src python3 -m bmad_miro_sync summarize-readiness --project-root . --config .bmad-miro.toml
+```
+
 ## Host Workflow
 
-1. Run `plan` to export operations for section docs, frames, and tables.
-2. Execute those operations in a host with Miro MCP access.
-3. Save execution results as JSON.
-4. Run `apply-results` to update `.bmad-miro-sync/state.json`.
+1. Run `run-codex-collaboration-workflow --stop-after publish` to export `plan.json`, `publish-bundle.json`, the backward-compatible `codex-bundle.json` alias, `instructions.md`, `results.template.json`, and `.bmad-miro-sync/run/collaboration-run.json`.
+2. Execute the publish plan in a host with Miro MCP access.
+3. Save execution results as `.bmad-miro-sync/run/results.json` with `run_status`, `executed_at`, optional `warnings` and `object_strategies`, and one item entry per executed operation.
+4. Fetch and normalize comments into `.bmad-miro-sync/run/comments.json`.
+5. Add triage metadata in `.bmad-miro-sync/run/review-input.json`.
+6. Resume `run-codex-collaboration-workflow --start-at apply-results` to update `.bmad-miro-sync/state.json`, ingest comments, generate decision records, and generate readiness outputs.
+
+`apply-results` now reads `.bmad-miro-sync/run/plan.json` by default so missing result entries are persisted as explicit pending operations instead of disappearing silently.
+
+The state file keeps:
+
+- `items`: current Miro mappings for created or updated objects
+- `operations`: the last reconciled plan with `execution_status` per operation, including archive/remove lifecycle transitions
+- `last_run`: the last applied run status, timestamp, pending/executed counts, degraded-mode warnings, and resolved object strategies
+
+Removed or archived content entries stay in `items` with their last known `item_id`, `miro_url`, `content_fingerprint`, and `lifecycle_state` so repeat sync history remains inspectable.
 
 For feedback ingest:
 
 1. Read `.bmad-miro-sync/state.json` to identify synced section items.
 2. Fetch and normalize comments from Miro into `comments.json`.
+   Preferred normalized comment shape:
+   - `artifact_id`: canonical section artifact id from the manifest
+   - `section_id`: same stable section identifier as `artifact_id`
+   - `source_artifact_id`: parent markdown artifact path
+   - `section_title`: human-readable section title
+   - `topic`: explicit grouping label; if omitted, ingest falls back to `General feedback`
+   - `author`, `created_at`, `body`
+   - `published_object_id`, `published_object_type`, `published_object_reference`, `miro_url`
 3. Run `ingest-comments` to write `_bmad-output/review-artifacts/miro-comments.md`.
+4. The generated review artifact groups feedback by source artifact, section, and topic, while unmatched comments are written to an explicit unresolved-input section instead of being merged silently.
+5. Add explicit triage metadata in `.bmad-miro-sync/run/review-input.json` and run `triage-feedback` to write `_bmad-output/review-artifacts/decision-records.md` plus the canonical sidecar `_bmad-output/review-artifacts/decision-records.json`.
+   Preferred triage shape:
+   - `section_id`, `topic`, `status`, `owner`, and `rationale`
+   - optional `source_artifact_id` and `follow_up_notes`
+   - approved statuses are `open`, `accepted`, `deferred`, `resolved`, and `blocked`
+6. Run `summarize-readiness` to generate `_bmad-output/implementation-artifacts/implementation-readiness.md` and `_bmad-output/implementation-artifacts/implementation-handoff.md`.
+7. The generated decision artifact keeps untriaged bundles open by default, preserves unresolved manifest misses as open or blocked only, and renders plain-language status labels for non-technical review.
+8. The readiness outputs stay repo-local and auditable: blockers, deferred items, open questions, workstream coverage gaps, and handoff actions are rendered from canonical decision data instead of reparsed markdown transcripts.
 
-This flow is designed for Codex first, but the same plan and results handshake can be used by Claude Code, Gemini CLI, or other environments that can execute Miro MCP operations.
+Legacy payloads that only provide `artifact_id`, `source_artifact_id`, `section_title`, `author`, `created_at`, `body`, and `miro_url` remain supported for backward compatibility.
+
+The normalized publish contract is host-neutral:
+
+- `plan.json`: canonical sync plan and operation ordering
+- `publish-bundle.json`: canonical artifact/discovery/object-strategy export for any host adapter
+- `codex-bundle.json`: Codex-compatible alias that mirrors `publish-bundle.json`
+- `instructions.md`: host-specific execution guidance rendered on top of the shared plan/bundle
+- `results.template.json`: normalized execution-results contract consumed by `apply-results`
+
+This flow is designed for Codex first, but the same plan, bundle, and results handshake can be used by Claude Code, Gemini CLI, or other environments that can execute Miro MCP operations without reimplementing the core planning rules.

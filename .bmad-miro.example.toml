@@ -2,6 +2,18 @@ board_url = "https://miro.com/app/board/uXjVGixS6vQ=/"
 source_root = "_bmad-output"
 manifest_path = ".bmad-miro-sync/state.json"
 
+# Optional discovery overrides. Leave commented to keep the legacy
+# source_root behavior, or enable to restrict discovery to canonical inputs.
+#[discovery]
+#source_paths = ["_bmad-output/planning-artifacts", "_bmad-output/implementation-artifacts", "_bmad-output/review-artifacts"]
+#required_artifact_classes = ["prd", "ux_design", "architecture"]
+
+# Optional object strategy overrides for degraded-mode hosts. Leave
+# commented to keep the preferred object types.
+#[object_strategies]
+#phase_zone = "workstream_anchor"  # default: "zone"
+#story_summary = "doc"             # default: "table"
+
 [layout]
 create_phase_frames = true
 
@@ -11,3 +23,6 @@ planning = true
 solutioning = true
 implementation = true
 stories_table = true
+
+[sync]
+removed_item_policy = "archive"
