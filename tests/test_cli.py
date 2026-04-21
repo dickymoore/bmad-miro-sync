@@ -97,6 +97,111 @@ class CliApplyResultsTests(unittest.TestCase):
             self.assertTrue((root / ".bmad-miro-sync/run/codex-bundle.json").exists())
             self.assertFalse((temp_root / ".bmad-miro-sync/run/plan.json").exists())
 
+    def test_plan_rejects_out_of_repo_output_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "project"
+            outside = Path(tmpdir) / "outside"
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            outside.mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text("# PRD\n\nBody\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "bmad_miro_sync",
+                    "plan",
+                    "--project-root",
+                    str(root),
+                    "--config",
+                    str(root / ".bmad-miro.toml"),
+                    "--output",
+                    str(outside / "plan.json"),
+                ],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("--output must stay inside the project root", result.stderr)
+            self.assertFalse((outside / "plan.json").exists())
+
+    def test_render_host_instructions_rejects_out_of_repo_output_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "project"
+            outside = Path(tmpdir) / "outside"
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            outside.mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text("# PRD\n\nBody\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "bmad_miro_sync",
+                    "render-host-instructions",
+                    "--project-root",
+                    str(root),
+                    "--config",
+                    str(root / ".bmad-miro.toml"),
+                    "--output",
+                    str(outside / "instructions.md"),
+                ],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("--output must stay inside the project root", result.stderr)
+            self.assertFalse((outside / "instructions.md").exists())
+
+    def test_export_bundle_rejects_out_of_repo_output_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "project"
+            outside = Path(tmpdir) / "outside"
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            outside.mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text("# PRD\n\nBody\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "bmad_miro_sync",
+                    "export-codex-bundle",
+                    "--project-root",
+                    str(root),
+                    "--config",
+                    str(root / ".bmad-miro.toml"),
+                    "--output-dir",
+                    str(outside / "run"),
+                ],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("--output-dir must stay inside the project root", result.stderr)
+            self.assertFalse((outside / "run/plan.json").exists())
+
     def test_apply_results_falls_back_to_legacy_reconciliation_when_default_plan_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

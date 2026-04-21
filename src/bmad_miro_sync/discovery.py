@@ -19,7 +19,12 @@ from .models import (
 )
 
 
-def discover_artifacts(project_root: str | Path, config: SyncConfig) -> ArtifactDiscoveryResult:
+def discover_artifacts(
+    project_root: str | Path,
+    config: SyncConfig,
+    *,
+    config_path: str | Path = ".bmad-miro.toml",
+) -> ArtifactDiscoveryResult:
     root = Path(project_root)
     candidates = _collect_candidates(root, config.source_paths)
     selected_candidates, skipped = _select_canonical_candidates(candidates)
@@ -58,7 +63,7 @@ def discover_artifacts(project_root: str | Path, config: SyncConfig) -> Artifact
             )
         warnings.append(warning)
 
-    previous_artifacts = _load_previous_artifacts(root, config)
+    previous_artifacts = _load_previous_artifacts(root, config, config_path=config_path)
     artifacts: list[ArtifactRecord] = []
     for selection in selected:
         path = root / selection.relative_path
@@ -253,7 +258,18 @@ def _canonicalize_source_relative_path(path: Path) -> str:
     return Path(*parts).as_posix()
 
 
-def _load_previous_artifacts(project_root: Path, config: SyncConfig) -> dict[str, list[ArtifactRecord]]:
+def _load_previous_artifacts(
+    project_root: Path,
+    config: SyncConfig,
+    *,
+    config_path: str | Path,
+) -> dict[str, list[ArtifactRecord]]:
+    config_path = Path(config_path)
+    if not config_path.is_absolute():
+        config_path = (project_root / config_path).resolve()
+    else:
+        config_path = config_path.resolve()
+    manifest_path = (project_root / config.manifest_path).resolve()
     for relative_path in (
         ".bmad-miro-sync/run/plan.json",
         ".bmad-miro-sync/run/publish-bundle.json",
@@ -262,12 +278,45 @@ def _load_previous_artifacts(project_root: Path, config: SyncConfig) -> dict[str
         payload = _load_json(project_root / relative_path)
         if payload is None:
             continue
+        if not _runtime_payload_matches_contract(
+            payload,
+            config_path=config_path,
+            project_root=project_root,
+            manifest_path=manifest_path,
+        ):
+            continue
         grouped = _group_previous_artifacts(payload.get("artifacts"))
         if grouped:
             return grouped
 
     manifest = load_manifest(project_root, config.manifest_path)
     return _group_previous_artifacts(manifest.items.values())
+
+
+def _runtime_payload_matches_contract(
+    payload: dict[str, object],
+    *,
+    config_path: Path,
+    project_root: Path,
+    manifest_path: Path,
+) -> bool:
+    payload_config_path = payload.get("config_path")
+    if not isinstance(payload_config_path, str) or not payload_config_path:
+        return False
+    try:
+        if Path(payload_config_path).resolve() != config_path:
+            return False
+    except OSError:
+        return False
+
+    payload_manifest_path = payload.get("manifest_path")
+    if not isinstance(payload_manifest_path, str) or not payload_manifest_path:
+        return False
+    try:
+        resolved_manifest_path = (project_root / payload_manifest_path).resolve()
+    except OSError:
+        return False
+    return resolved_manifest_path == manifest_path
 
 
 def _load_json(path: Path) -> dict | None:

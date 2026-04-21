@@ -568,6 +568,56 @@ required_artifact_classes = ["prd"]
             self.assertEqual(renamed.previous_artifact_id, "_bmad-output/planning-artifacts/prd.md#prd/goals")
             self.assertEqual(sibling.lineage_status, "unchanged")
 
+    def test_discovery_ignores_runtime_exports_with_mismatched_config_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime_dir = root / ".bmad-miro-sync/run"
+            runtime_dir.mkdir(parents=True)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            config_path = root / ".bmad-miro.toml"
+            config_path.write_text(CONFIG_WITH_DISCOVERY, encoding="utf-8")
+            doc_path = root / "_bmad-output/planning-artifacts/prd.md"
+            doc_path.write_text("# PRD\n\n## Goals\n\nBody\n", encoding="utf-8")
+
+            config = load_config(config_path)
+            first_plan = build_sync_plan(root, config_path, config)
+            payload = first_plan.to_dict()
+            payload["config_path"] = str(root / "other-config.toml")
+            write_json(runtime_dir / "plan.json", payload)
+
+            doc_path.write_text("# PRD\n\n## Objectives\n\nBody\n", encoding="utf-8")
+
+            result = discover_artifacts(root, config, config_path=config_path)
+            renamed = next(artifact for artifact in result.artifacts if artifact.artifact_id.endswith("/objectives"))
+
+            self.assertEqual(renamed.lineage_status, "new")
+            self.assertIsNone(renamed.previous_artifact_id)
+
+    def test_discovery_ignores_runtime_exports_with_mismatched_manifest_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime_dir = root / ".bmad-miro-sync/run"
+            runtime_dir.mkdir(parents=True)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            config_path = root / ".bmad-miro.toml"
+            config_path.write_text(CONFIG_WITH_DISCOVERY, encoding="utf-8")
+            doc_path = root / "_bmad-output/planning-artifacts/prd.md"
+            doc_path.write_text("# PRD\n\n## Goals\n\nBody\n", encoding="utf-8")
+
+            config = load_config(config_path)
+            first_plan = build_sync_plan(root, config_path, config)
+            payload = first_plan.to_dict()
+            payload["manifest_path"] = "custom/state.json"
+            write_json(runtime_dir / "plan.json", payload)
+
+            doc_path.write_text("# PRD\n\n## Objectives\n\nBody\n", encoding="utf-8")
+
+            result = discover_artifacts(root, config, config_path=config_path)
+            renamed = next(artifact for artifact in result.artifacts if artifact.artifact_id.endswith("/objectives"))
+
+            self.assertEqual(renamed.lineage_status, "new")
+            self.assertIsNone(renamed.previous_artifact_id)
+
     def test_discovery_uses_manifest_lineage_when_runtime_exports_are_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

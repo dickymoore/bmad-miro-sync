@@ -64,7 +64,7 @@ def build_sync_plan(
     config: SyncConfig,
 ) -> SyncPlan:
     root = Path(project_root)
-    discovery = discover_artifacts(root, config)
+    discovery = discover_artifacts(root, config, config_path=config_path)
     manifest = load_manifest(root, config.manifest_path)
     object_strategies = _resolve_object_strategies(config)
 

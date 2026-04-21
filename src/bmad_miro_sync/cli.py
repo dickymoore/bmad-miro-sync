@@ -153,13 +153,14 @@ def main() -> int:
         project_root = Path(args.project_root).resolve()
         try:
             config_path, config = _load_cli_config(project_root, args.config)
+            output_path = _optional_repo_local_path(project_root, args.output, "--output")
         except ValueError as exc:
             sys.stderr.write(f"{exc}\n")
             return 1
         plan = build_sync_plan(project_root, config_path, config)
         payload = plan.to_dict()
-        if args.output:
-            write_json(_resolve_project_path(project_root, args.output), payload)
+        if output_path is not None:
+            write_json(output_path, payload)
         else:
             json.dump(payload, sys.stdout, indent=2, sort_keys=True)
             sys.stdout.write("\n")
@@ -169,15 +170,15 @@ def main() -> int:
         project_root = Path(args.project_root).resolve()
         try:
             config_path, config = _load_cli_config(project_root, args.config)
+            output_path = _optional_repo_local_path(project_root, args.output, "--output")
         except ValueError as exc:
             sys.stderr.write(f"{exc}\n")
             return 1
         plan = build_sync_plan(project_root, config_path, config)
         output = render_host_instructions(plan, args.host)
-        if args.output:
-            path = _resolve_project_path(project_root, args.output)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(output, encoding="utf-8")
+        if output_path is not None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(output, encoding="utf-8")
         else:
             sys.stdout.write(output)
         return 0
@@ -186,10 +187,10 @@ def main() -> int:
         project_root = Path(args.project_root).resolve()
         try:
             config_path, _config = _load_cli_config(project_root, args.config)
+            output_dir = _resolve_repo_local_path(project_root, args.output_dir, "--output-dir")
         except ValueError as exc:
             sys.stderr.write(f"{exc}\n")
             return 1
-        output_dir = _resolve_project_path(project_root, args.output_dir)
         export_host_bundle(
             project_root,
             config_path,
@@ -459,6 +460,12 @@ def _resolve_project_path(project_root: Path, value: str) -> Path:
     if not path.is_absolute():
         path = project_root / path
     return path.resolve()
+
+
+def _optional_repo_local_path(project_root: Path, value: str | None, label: str) -> Path | None:
+    if value is None:
+        return None
+    return _resolve_repo_local_path(project_root, value, label)
 
 
 def _resolve_repo_local_path(project_root: Path, value: str, label: str) -> Path:
