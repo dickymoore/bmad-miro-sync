@@ -36,9 +36,9 @@ def install_project(
     project_name = root.name
     config_path = root / ".bmad-miro.toml"
     runtime_dir = root / ".bmad-miro-sync" / "run"
-    skill_path = root / ".agents" / "skills" / "bmad-miro-auto-sync" / "SKILL.md"
-    comment_skill_path = root / ".agents" / "skills" / "bmad-ingest-miro-comments" / "SKILL.md"
-    collaboration_skill_path = root / ".agents" / "skills" / "run-codex-collaboration-workflow" / "SKILL.md"
+    skill_path = root / ".agents" / "skills" / "bmad-miro-sync" / "SKILL.md"
+    comment_skill_path = root / ".agents" / "skills" / "bmad-miro-ingest" / "SKILL.md"
+    collaboration_skill_path = root / ".agents" / "skills" / "bmad-miro-collaboration" / "SKILL.md"
     doc_path = root / "docs" / "miro-sync.md"
     gitignore_path = root / ".gitignore"
 
@@ -51,6 +51,7 @@ def install_project(
     comment_skill_path.parent.mkdir(parents=True, exist_ok=True)
     collaboration_skill_path.parent.mkdir(parents=True, exist_ok=True)
     doc_path.parent.mkdir(parents=True, exist_ok=True)
+    _remove_legacy_skill_dirs(root)
 
     rendered_config = render_config(board_url)
     if config_path.exists():
@@ -121,3 +122,20 @@ def _next_backup_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
         index += 1
+
+
+def _remove_legacy_skill_dirs(root: Path) -> None:
+    for skill_name in (
+        "bmad-miro-auto-sync",
+        "bmad-ingest-miro-comments",
+        "run-codex-collaboration-workflow",
+    ):
+        skill_dir = root / ".agents" / "skills" / skill_name
+        if not skill_dir.exists():
+            continue
+        for path in sorted(skill_dir.rglob("*"), reverse=True):
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+            else:
+                path.rmdir()
+        skill_dir.rmdir()

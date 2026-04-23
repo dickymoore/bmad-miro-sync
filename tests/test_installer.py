@@ -35,9 +35,9 @@ class InstallerTests(unittest.TestCase):
 
             self.assertTrue((root / ".bmad-miro.toml").exists())
             self.assertTrue((root / "docs/miro-sync.md").exists())
-            self.assertTrue((root / ".agents/skills/bmad-miro-auto-sync/SKILL.md").exists())
-            self.assertTrue((root / ".agents/skills/bmad-ingest-miro-comments/SKILL.md").exists())
-            self.assertTrue((root / ".agents/skills/run-codex-collaboration-workflow/SKILL.md").exists())
+            self.assertTrue((root / ".agents/skills/bmad-miro-sync/SKILL.md").exists())
+            self.assertTrue((root / ".agents/skills/bmad-miro-ingest/SKILL.md").exists())
+            self.assertTrue((root / ".agents/skills/bmad-miro-collaboration/SKILL.md").exists())
             self.assertEqual(result.backup_files, [])
             config_text = (root / ".bmad-miro.toml").read_text(encoding="utf-8")
             self.assertIn("#[discovery]", config_text)
@@ -47,28 +47,76 @@ class InstallerTests(unittest.TestCase):
             )
             self.assertIn("#[object_strategies]", config_text)
             self.assertIn('[sync]\nremoved_item_policy = "archive"', config_text)
-            auto_sync = (root / ".agents/skills/bmad-miro-auto-sync/SKILL.md").read_text(encoding="utf-8")
+            gitignore_text = (root / ".gitignore").read_text(encoding="utf-8")
+            self.assertIn(".bmad-miro-sync/", gitignore_text)
+            self.assertIn(".bmad-miro-auth.json", gitignore_text)
+            auto_sync = (root / ".agents/skills/bmad-miro-sync/SKILL.md").read_text(encoding="utf-8")
             self.assertIn('[object_strategies].phase_zone = "workstream_anchor"', auto_sync)
             self.assertIn("do not ask the user", auto_sync)
-            comment_skill = (root / ".agents/skills/bmad-ingest-miro-comments/SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("complete the full publish pass in one run", auto_sync)
+            self.assertIn("publish-direct", auto_sync)
+            self.assertIn("MIRO_API_TOKEN", auto_sync)
+            self.assertIn("Smaller runs may still complete through Codex Miro MCP alone", auto_sync)
+            self.assertIn("create or confirm a Miro Developer team", auto_sync)
+            self.assertIn("setup-miro-rest-auth", auto_sync)
+            self.assertIn(".bmad-miro-auth.json", auto_sync)
+            self.assertNotIn("Only proceed with a partial results file", auto_sync)
+            self.assertIn("name: bmad-miro-sync", auto_sync)
+            comment_skill = (root / ".agents/skills/bmad-miro-ingest/SKILL.md").read_text(encoding="utf-8")
             self.assertIn('"section_id": "_bmad-output/planning-artifacts/prd.md#prd/goals"', comment_skill)
             self.assertIn('"topic": "Acceptance criteria"', comment_skill)
             self.assertIn('"published_object_id": "doc-123"', comment_skill)
             self.assertIn('"published_object_reference": "artifact:_bmad-output/planning-artifacts/prd.md#prd/goals"', comment_skill)
-            collaboration_skill = (root / ".agents/skills/run-codex-collaboration-workflow/SKILL.md").read_text(
+            self.assertIn("name: bmad-miro-ingest", comment_skill)
+            collaboration_skill = (root / ".agents/skills/bmad-miro-collaboration/SKILL.md").read_text(
                 encoding="utf-8"
             )
-            self.assertIn("run-codex-collaboration-workflow", collaboration_skill)
+            self.assertIn("name: bmad-miro-collaboration", collaboration_skill)
             self.assertIn("--stop-after publish", collaboration_skill)
             self.assertIn("--start-at apply-results", collaboration_skill)
             self.assertIn("workstream_anchor", collaboration_skill)
             self.assertIn("implementation-readiness.md", collaboration_skill)
+            self.assertIn("requires a complete publish pass", collaboration_skill)
+            self.assertIn("publish-direct", collaboration_skill)
+            self.assertIn("Smaller runs may still complete through Codex Miro MCP alone", collaboration_skill)
+            self.assertIn("setup-miro-rest-auth", collaboration_skill)
             self.assertIn(root / ".agents/skills/bmad-create-prd/SKILL.md", result.patched_skills)
             patched = (root / ".agents/skills/bmad-create-prd/SKILL.md").read_text(encoding="utf-8")
             self.assertIn("## BMad Miro Sync Policy", patched)
             doc_text = (root / "docs/miro-sync.md").read_text(encoding="utf-8")
-            self.assertIn("Run The Codex Collaboration Workflow", doc_text)
-            self.assertIn("run-codex-collaboration-workflow", doc_text)
+            self.assertIn("Run The Miro Collaboration Workflow", doc_text)
+            self.assertIn("bmad-miro-collaboration", doc_text)
+            self.assertIn("bmad-miro-sync", doc_text)
+            self.assertIn("bmad-miro-ingest", doc_text)
+            self.assertIn("publish-direct", doc_text)
+            self.assertIn("Smaller runs may still complete through Codex Miro MCP alone", doc_text)
+            self.assertIn("create or confirm a Miro Developer team", doc_text)
+            self.assertIn("setup-miro-rest-auth", doc_text)
+            self.assertIn(".bmad-miro-auth.json", doc_text)
+            self.assertIn("publish is one pass or blocked", doc_text)
+
+    def test_install_removes_legacy_skill_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            legacy_paths = [
+                root / ".agents/skills/bmad-miro-auto-sync/SKILL.md",
+                root / ".agents/skills/bmad-ingest-miro-comments/SKILL.md",
+                root / ".agents/skills/run-codex-collaboration-workflow/SKILL.md",
+            ]
+            for path in legacy_paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("legacy\n", encoding="utf-8")
+
+            install_project(
+                root,
+                "https://miro.com/app/board/uXjVGixS6vQ=/",
+                sync_src="/tmp/bmad-miro-sync/src",
+                patch_bmad_skills=False,
+            )
+
+            for path in legacy_paths:
+                self.assertFalse(path.exists())
+            self.assertTrue((root / ".agents/skills/bmad-miro-sync/SKILL.md").exists())
 
     def test_install_can_skip_bmad_skill_patching(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

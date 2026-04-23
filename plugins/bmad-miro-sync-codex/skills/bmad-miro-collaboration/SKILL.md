@@ -1,11 +1,11 @@
 ---
-name: run-codex-collaboration-workflow
-description: Run the full Codex-first collaboration loop across publish, apply, ingest, triage, and readiness stages.
+name: bmad-miro-collaboration
+description: Run the full Miro collaboration loop across publish, apply, ingest, triage, and readiness stages.
 ---
 
-# Run Codex Collaboration Workflow
+# BMad Miro Collaboration
 
-Use this skill when the operator wants one ordered Codex-first path for the full collaboration loop.
+Use this skill when the operator wants one ordered path for the full collaboration loop.
 
 ## Preconditions
 
@@ -42,6 +42,8 @@ If the exported plan includes `ensure_zone` operations but the available Miro to
 1. update `<repo-root>/.bmad-miro.toml` so `[object_strategies].phase_zone = "workstream_anchor"`
 2. rerun the publish-stage command above
 3. continue from the regenerated plan
+
+This workflow requires a complete publish pass. If you cannot execute every publish operation after regenerating the plan, stop and report blocked. Do not write a partial `results.json`, and do not resume from `apply-results` with a partial publish.
 
 4. Fetch and normalize Miro comments into `<repo-root>/.bmad-miro-sync/run/comments.json`.
 

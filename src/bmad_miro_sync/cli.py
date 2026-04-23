@@ -19,6 +19,21 @@ from .decisions import (
 from .host_exports import CODEX_BUNDLE_FILENAME, export_host_bundle, render_host_instructions, write_json
 from .installer import install_project
 from .manifest import apply_results, load_manifest, save_manifest
+from .miro_api import (
+    DEFAULT_API_BASE_URL,
+    DEFAULT_RESULTS_PATH,
+    DEFAULT_TOKEN_ENV,
+    MiroApiError,
+    execute_publish_plan,
+    load_miro_token_for_project,
+)
+from .miro_auth import (
+    DEFAULT_AUTH_PATH,
+    DEFAULT_LOCAL_CALLBACK_TIMEOUT,
+    DEFAULT_TOKEN_ENDPOINT,
+    MiroAuthError,
+    interactive_setup,
+)
 from .planner import build_sync_plan
 from .readiness import (
     DEFAULT_READINESS_HANDOFF_OUTPUT,
@@ -55,6 +70,37 @@ def main() -> int:
     _add_common_args(bundle_parser)
     bundle_parser.add_argument("--output-dir", required=True, help="Directory to write plan, instructions, and results template.")
 
+    publish_direct_parser = subparsers.add_parser(
+        "publish-direct",
+        help="Execute the publish plan directly against the Miro REST API and write results.json.",
+    )
+    _add_common_args(publish_direct_parser)
+    publish_direct_parser.add_argument(
+        "--plan",
+        default=DEFAULT_RUNTIME_PLAN_PATH,
+        help="Plan JSON to execute. Defaults to the repo-local runtime plan.",
+    )
+    publish_direct_parser.add_argument(
+        "--results",
+        default=DEFAULT_RESULTS_PATH,
+        help="Repo-local results JSON path to write.",
+    )
+    publish_direct_parser.add_argument(
+        "--token-env",
+        default=DEFAULT_TOKEN_ENV,
+        help="Environment variable containing the Miro bearer token.",
+    )
+    publish_direct_parser.add_argument(
+        "--api-base-url",
+        default=DEFAULT_API_BASE_URL,
+        help="Base URL for the Miro REST API.",
+    )
+    publish_direct_parser.add_argument(
+        "--apply-results",
+        action="store_true",
+        help="Apply results back into the repo-local manifest, but only when publish completes cleanly.",
+    )
+
     install_parser = subparsers.add_parser("install", help="Install bmad-miro-sync into a target project.")
     install_parser.add_argument("--project-root", default=".", help="Target project root.")
     install_parser.add_argument("--board-url", required=True, help="Miro board URL.")
@@ -67,6 +113,43 @@ def main() -> int:
         "--no-patch-bmad-skills",
         action="store_true",
         help="Do not patch existing BMad skill headers with the sync policy.",
+    )
+    install_parser.add_argument(
+        "--setup-rest-auth",
+        action="store_true",
+        help="After install, run the interactive repo-local Miro REST auth setup flow.",
+    )
+    install_parser.add_argument(
+        "--skip-rest-auth-prompt",
+        action="store_true",
+        help="Do not offer the interactive repo-local Miro REST auth setup prompt during install.",
+    )
+
+    auth_parser = subparsers.add_parser(
+        "setup-miro-rest-auth",
+        help="Interactively configure repo-local Miro REST auth and store the access token in a gitignored file.",
+    )
+    auth_parser.add_argument("--project-root", default=".", help="Project root containing the repo-local auth file.")
+    auth_parser.add_argument(
+        "--auth-path",
+        default=DEFAULT_AUTH_PATH,
+        help="Repo-local path for the gitignored Miro REST auth file.",
+    )
+    auth_parser.add_argument("--install-url", help="Full Miro app install URL containing client_id and redirect_uri.")
+    auth_parser.add_argument("--client-id", help="Miro app client ID.")
+    auth_parser.add_argument("--client-secret", help="Miro app client secret.")
+    auth_parser.add_argument("--redirect-uri", help="Miro OAuth redirect URI.")
+    auth_parser.add_argument("--redirected-url", help="Redirected URL or bare authorization code returned by Miro.")
+    auth_parser.add_argument(
+        "--token-endpoint",
+        default=DEFAULT_TOKEN_ENDPOINT,
+        help="OAuth token endpoint used to exchange the authorization code.",
+    )
+    auth_parser.add_argument(
+        "--callback-timeout",
+        type=int,
+        default=DEFAULT_LOCAL_CALLBACK_TIMEOUT,
+        help="Seconds to wait for a localhost OAuth callback before failing.",
     )
 
     results_parser = subparsers.add_parser("apply-results", help="Apply execution results to the local manifest.")
@@ -200,6 +283,86 @@ def main() -> int:
         )
         return 0
 
+    if args.command == "setup-miro-rest-auth":
+        project_root = Path(args.project_root).resolve()
+        try:
+            auth_result = interactive_setup(
+                project_root,
+                auth_path=args.auth_path,
+                token_endpoint=args.token_endpoint,
+                install_url=args.install_url,
+                client_id=args.client_id,
+                client_secret=args.client_secret,
+                redirect_uri=args.redirect_uri,
+                redirected_value=args.redirected_url,
+                callback_timeout=args.callback_timeout,
+                announce=sys.stdout.isatty(),
+            )
+        except (MiroAuthError, EOFError) as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 1
+        json.dump(auth_result, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 0
+
+    if args.command == "publish-direct":
+        project_root = Path(args.project_root).resolve()
+        try:
+            config_path, config = _load_cli_config(project_root, args.config)
+            plan_path = _resolve_repo_local_path(project_root, args.plan, "--plan")
+            results_path = _resolve_repo_local_path(project_root, args.results, "--results")
+            token = load_miro_token_for_project(project_root, args.token_env)
+        except (MiroApiError, ValueError) as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 1
+
+        if plan_path.exists():
+            try:
+                plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                sys.stderr.write(f"Invalid plan JSON in {args.plan}: {exc}\n")
+                return 1
+            except OSError as exc:
+                sys.stderr.write(f"Unable to read plan file {args.plan}: {exc}\n")
+                return 1
+        else:
+            plan = build_sync_plan(project_root, config_path, config).to_dict()
+
+        try:
+            results = execute_publish_plan(
+                plan,
+                token=token,
+                api_base_url=args.api_base_url,
+            )
+        except MiroApiError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 1
+
+        write_json(results_path, results)
+
+        if args.apply_results:
+            if results.get("run_status") != "complete":
+                sys.stderr.write(
+                    "publish-direct wrote results.json, but the publish did not complete cleanly. "
+                    "Results were not applied to the manifest.\n"
+                )
+                json.dump(results, sys.stdout, indent=2, sort_keys=True)
+                sys.stdout.write("\n")
+                return 1
+            manifest = load_manifest(project_root, config.manifest_path)
+            updated = apply_results(
+                manifest,
+                results,
+                plan=plan,
+                plan_path=_display_path(plan_path, project_root),
+                results_path=_display_path(results_path, project_root),
+            )
+            save_manifest(project_root, config.manifest_path, updated)
+
+        json.dump(results, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 0 if results.get("run_status") == "complete" else 1
+
     if args.command == "install":
         result = install_project(
             args.project_root,
@@ -207,12 +370,29 @@ def main() -> int:
             sync_src=args.sync_src,
             patch_bmad_skills=not args.no_patch_bmad_skills,
         )
+        auth_result = None
+        should_prompt_for_auth = (
+            not args.skip_rest_auth_prompt
+            and sys.stdin.isatty()
+            and sys.stdout.isatty()
+        )
+        if args.setup_rest_auth or should_prompt_for_auth:
+            run_setup = args.setup_rest_auth
+            if not run_setup:
+                run_setup = _confirm("Set up repo-local Miro REST auth now? [y/N]: ")
+            if run_setup:
+                try:
+                    auth_result = interactive_setup(result.project_root)
+                except (MiroAuthError, EOFError) as exc:
+                    sys.stderr.write(f"{exc}\n")
+                    return 1
         payload = {
             "project_root": str(result.project_root),
             "written_files": [str(path) for path in result.written_files],
             "backup_files": [str(path) for path in result.backup_files],
             "patched_skills": [str(path) for path in result.patched_skills],
             "skipped_skills": [str(path) for path in result.skipped_skills],
+            "auth": auth_result,
         }
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
@@ -488,6 +668,11 @@ def _ensure_distinct_paths(paths: dict[str, Path]) -> None:
         if other is not None:
             raise ValueError(f"Output path collision: {other} and {label} both resolve to {path}.")
         seen[path] = label
+
+
+def _confirm(prompt: str) -> bool:
+    response = input(prompt).strip().lower()
+    return response in {"y", "yes"}
 
 
 def _validate_apply_results_contract(

@@ -6,7 +6,7 @@ import re
 
 SYNC_POLICY_BODY = (
     "If this skill creates or updates `_bmad-output` artifacts or other stakeholder-facing project documentation, "
-    "invoke `bmad-miro-auto-sync` before considering the workflow complete unless the user explicitly says not to "
+    "invoke `bmad-miro-sync` before considering the workflow complete unless the user explicitly says not to "
     "sync. If the sync fails, report the blocker clearly."
 )
 
@@ -54,11 +54,11 @@ removed_item_policy = "archive"
 
 def render_skill(project_root: str, sync_src: str, config_path: str, runtime_dir: str, project_name: str) -> str:
     return f"""---
-name: bmad-miro-auto-sync
-description: Export the {project_name} BMad-to-Miro bundle, execute section-level sync with Codex Miro tools, and apply the results back into the local sync manifest.
+name: bmad-miro-sync
+description: Send the current {project_name} BMAD artifacts to Miro, handling empty-board bootstrap and incremental sync behind the scenes.
 ---
 
-# BMad Miro Auto Sync
+# BMad Miro Sync
 
 Use this skill whenever {project_name} BMad artifacts should be pushed into the shared Miro board.
 
@@ -112,7 +112,41 @@ If the exported plan includes `ensure_zone` operations but the available Miro to
 2. re-run the export command above to regenerate the bundle
 3. continue from the regenerated plan and treat that new plan as the source of truth for the sync run
 
-Only proceed with a partial results file when the user explicitly wants a partial sync.
+This sync must complete the full publish pass in one run. If you cannot execute every remaining operation after regenerating the plan, stop and report blocked instead of writing a partial `results.json` or applying partial publish results.
+
+If Codex Miro MCP tools are too limited for the remaining publish volume, and `MIRO_API_TOKEN` is available in the environment, use the direct REST publish path instead:
+
+```bash
+PYTHONPATH={sync_src} \\
+python3 -m bmad_miro_sync publish-direct \\
+  --project-root {project_root} \\
+  --config {config_path} \\
+  --plan {runtime_dir}/plan.json \\
+  --results {runtime_dir}/results.json \\
+  --apply-results
+```
+
+That path uses Miro's bulk item-create API for bootstrap-heavy runs and writes the same repo-local `results.json` contract.
+
+Only use that REST path when the MCP publish path is not practical for the current run size. Smaller runs may still complete through Codex Miro MCP alone and do not require `MIRO_API_TOKEN`.
+
+Preferred setup path:
+
+1. run `python3 -m bmad_miro_sync setup-miro-rest-auth --project-root {project_root}`
+2. configure a localhost redirect URI in the Miro app settings, for example `http://127.0.0.1:8899/callback`
+3. paste the Miro app install URL or enter the client ID and that localhost redirect URI manually
+4. enter the client secret
+5. open the generated install URL and authorize the app
+6. let the tool capture the localhost callback automatically and store the token in the gitignored repo-local file `.bmad-miro-auth.json`
+
+After that, `publish-direct` automatically uses the repo-local auth file. `MIRO_API_TOKEN` still works and overrides the repo-local file when set.
+
+If you set up REST auth manually, the operator must first:
+
+1. create or confirm a Miro Developer team
+2. create a Miro app in that team
+3. install and authorize the app
+4. export the resulting OAuth access token as `MIRO_API_TOKEN`
 
 4. Write:
 
@@ -121,8 +155,6 @@ Only proceed with a partial results file when the user explicitly wants a partia
 The JSON shape must match the template in:
 
 - `{runtime_dir}/results.template.json`
-
-If only part of the plan executes, set `run_status` to `partial` and write only the executed operation entries. The local state file will keep the remaining operations pending for retry.
 
 5. Apply the results:
 
@@ -151,7 +183,7 @@ python3 -m bmad_miro_sync apply-results \\
 The intended operating pattern is:
 
 1. Run a BMad artifact-producing skill
-2. Immediately run `bmad-miro-auto-sync`
+2. Immediately run `bmad-miro-sync`
 
 For {project_name}, this is the practical automatic sync path inside Codex because Codex can both execute the local bundle and call the Miro MCP tools in the same session.
 """
@@ -161,11 +193,11 @@ def render_comment_ingest_skill(project_root: str, sync_src: str, config_path: s
     comments_path = f"{runtime_dir}/comments.json"
     review_input_path = f"{runtime_dir}/review-input.json"
     return f"""---
-name: bmad-ingest-miro-comments
-description: Fetch normalized Miro comments for synced {project_name} sections and write them into a BMAD review artifact.
+name: bmad-miro-ingest
+description: Bring normalized Miro comments for synced {project_name} sections back into the repo and generate BMAD review artifacts.
 ---
 
-# BMad Ingest Miro Comments
+# BMad Miro Ingest
 
 Use this skill when stakeholders have added comments in Miro and those comments should be brought back into the repo as review input.
 
@@ -276,13 +308,13 @@ def render_collaboration_skill(
     project_name: str,
 ) -> str:
     return f"""---
-name: run-codex-collaboration-workflow
-description: Run the full Codex-first collaboration loop for {project_name} across publish, apply, ingest, triage, and readiness stages.
+name: bmad-miro-collaboration
+description: Run the full {project_name} Miro collaboration loop across publish, ingest, triage, and readiness stages.
 ---
 
-# Run Codex Collaboration Workflow
+# BMad Miro Collaboration
 
-Use this skill when the operator wants one ordered Codex-first path for the full collaboration loop.
+Use this skill when the operator wants one ordered path for the full collaboration loop.
 
 ## Repo-Specific Settings
 
@@ -320,6 +352,42 @@ If the exported plan includes `ensure_zone` operations but the current Miro tool
 1. update `{config_path}` so `[object_strategies].phase_zone = "workstream_anchor"`
 2. rerun the workflow command above with `--stop-after publish`
 3. continue from the regenerated plan and treat that new plan as the source of truth
+
+This workflow requires a complete publish pass. If you cannot execute every publish operation after regenerating the plan, stop and report blocked. Do not write a partial `results.json`, and do not resume from `apply-results` with a partial publish.
+
+If Codex Miro MCP tools are too limited for the publish volume, and `MIRO_API_TOKEN` is available in the environment, use the direct REST publish path before continuing:
+
+```bash
+PYTHONPATH={sync_src} \\
+python3 -m bmad_miro_sync publish-direct \\
+  --project-root {project_root} \\
+  --config {config_path} \\
+  --plan {runtime_dir}/plan.json \\
+  --results {runtime_dir}/results.json \\
+  --apply-results
+```
+
+That path uses Miro's bulk item-create API for large bootstrap runs and keeps the same repo-local results contract.
+
+Only use that REST path when the MCP publish path is not practical for the current run size. Smaller runs may still complete through Codex Miro MCP alone and do not require `MIRO_API_TOKEN`.
+
+Preferred setup path:
+
+1. run `python3 -m bmad_miro_sync setup-miro-rest-auth --project-root {project_root}`
+2. configure a localhost redirect URI in the Miro app settings, for example `http://127.0.0.1:8899/callback`
+3. paste the Miro app install URL or enter the client ID and that localhost redirect URI manually
+4. enter the client secret
+5. open the generated install URL and authorize the app
+6. let the tool capture the localhost callback automatically and store the token in the gitignored repo-local file `.bmad-miro-auth.json`
+
+After that, `publish-direct` automatically uses the repo-local auth file. `MIRO_API_TOKEN` still works and overrides the repo-local file when set.
+
+If you set up REST auth manually, the operator must first:
+
+1. create or confirm a Miro Developer team
+2. create a Miro app in that team
+3. install and authorize the app
+4. export the resulting OAuth access token as `MIRO_API_TOKEN`
 
 4. Fetch and normalize Miro comments into `{runtime_dir}/comments.json`.
 
@@ -403,11 +471,11 @@ python3 -m bmad_miro_sync apply-results \\
   --results {runtime_dir}/results.json
 ```
 
-## Run The Codex Collaboration Workflow
+## Run The Miro Collaboration Workflow
 
 For the full collaboration loop, use the single project-local skill:
 
-- `run-codex-collaboration-workflow`
+- `bmad-miro-collaboration`
 
 Or use the CLI entrypoint directly:
 
@@ -431,22 +499,56 @@ python3 -m bmad_miro_sync run-codex-collaboration-workflow \\
   --start-at apply-results
 ```
 
-If the exported publish plan requires phase-zone containers that the current Miro tools cannot create, set `[object_strategies].phase_zone = "workstream_anchor"`, rerun the publish stage, and continue from the regenerated plan.
+If the exported publish plan requires phase-zone containers that the current Miro tools cannot create, set `[object_strategies].phase_zone = "workstream_anchor"`, rerun the publish stage, and continue from the regenerated plan. For this repo-local workflow, publish is one pass or blocked: do not apply partial publish results.
+
+If the local Codex session cannot push the remaining publish volume with MCP calls alone, and `MIRO_API_TOKEN` is available, execute the runtime plan directly through the REST publisher:
+
+```bash
+PYTHONPATH={sync_src} \\
+python3 -m bmad_miro_sync publish-direct \\
+  --project-root {project_root} \\
+  --config {config_path} \\
+  --plan {runtime_dir}/plan.json \\
+  --results {runtime_dir}/results.json \\
+  --apply-results
+```
+
+`publish-direct` uses Miro's bulk create endpoint for bootstrap-heavy runs and writes the same repo-local `results.json` contract that `apply-results` consumes.
+
+Only use that REST path when the MCP publish path is not practical for the current run size. Smaller runs may still complete through Codex Miro MCP alone and do not require `MIRO_API_TOKEN`.
+
+Preferred setup path:
+
+1. run `python3 -m bmad_miro_sync setup-miro-rest-auth --project-root {project_root}`
+2. configure a localhost redirect URI in the Miro app settings, for example `http://127.0.0.1:8899/callback`
+3. paste the Miro app install URL or enter the client ID and that localhost redirect URI manually
+4. enter the client secret
+5. open the generated install URL and authorize the app
+6. let the tool capture the localhost callback automatically and store the token in the gitignored repo-local file `.bmad-miro-auth.json`
+
+After that, `publish-direct` automatically uses the repo-local auth file. `MIRO_API_TOKEN` still works and overrides the repo-local file when set.
+
+If you set up REST auth manually, the operator must first:
+
+1. create or confirm a Miro Developer team
+2. create a Miro app in that team
+3. install and authorize the app
+4. export the resulting OAuth access token as `MIRO_API_TOKEN`
 
 ## Notes
 
 - Local BMad artifacts remain the source of truth.
 - Miro item mappings are stored in `.bmad-miro-sync/state.json`.
-- `.bmad-miro-sync/state.json` also keeps the last reconciled operation statuses and partial-run summary.
+- `.bmad-miro-sync/state.json` also keeps the last reconciled operation statuses and run summary.
 - Runtime sync files are ignored by git.
-- If the current Miro tool surface cannot create phase-zone containers, set `[object_strategies].phase_zone = "workstream_anchor"`, regenerate the bundle, and continue from the new plan rather than asking the user to choose a partial run.
+- If the current Miro tool surface cannot create phase-zone containers, set `[object_strategies].phase_zone = "workstream_anchor"`, regenerate the bundle, and continue from the new plan. If the remaining publish operations still cannot be completed in the same run, stop blocked rather than applying a partial publish.
 
 ## Codex Workflow
 
 For normal use inside Codex, use the local skill:
 
-- `bmad-miro-auto-sync`
-- `bmad-ingest-miro-comments`
+- `bmad-miro-sync`
+- `bmad-miro-ingest`
 
 That skill wraps the full project-specific flow:
 
@@ -458,20 +560,20 @@ That skill wraps the full project-specific flow:
 The intended project workflow is:
 
 1. run a BMad step that updates `_bmad-output`
-2. run `run-codex-collaboration-workflow`
+2. run `bmad-miro-sync` to publish to Miro, or `bmad-miro-collaboration` to publish and bring review state back
 
 To bring stakeholder comments back in as review material:
 
 1. fetch and normalize Miro comments for synced section items
 2. write `.bmad-miro-sync/run/comments.json`
 3. add triage in `.bmad-miro-sync/run/review-input.json`
-4. resume `run-codex-collaboration-workflow` from `apply-results`
+4. resume `bmad-miro-collaboration` from `apply-results`
 """
 
 
 def ensure_gitignore_entries(existing: str) -> str:
     lines = existing.splitlines()
-    required = [".bmad-miro-sync/"]
+    required = [".bmad-miro-sync/", ".bmad-miro-auth.json"]
     changed = False
     for entry in required:
         if entry not in lines:
@@ -520,5 +622,12 @@ def skill_files(root: Path) -> list[Path]:
         for path in skills_root.glob("*/SKILL.md")
         if path.name == "SKILL.md"
         and path.parent.name
-        not in {"bmad-miro-auto-sync", "bmad-ingest-miro-comments", "run-codex-collaboration-workflow"}
+        not in {
+            "bmad-miro-sync",
+            "bmad-miro-ingest",
+            "bmad-miro-collaboration",
+            "bmad-miro-auto-sync",
+            "bmad-ingest-miro-comments",
+            "run-codex-collaboration-workflow",
+        }
     )

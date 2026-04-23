@@ -34,10 +34,12 @@ PYTHONPATH=src python3 -m bmad_miro_sync install \
 The installer creates:
 
 - `.bmad-miro.toml`
-- `.agents/skills/bmad-miro-auto-sync/SKILL.md`
-- `.agents/skills/run-codex-collaboration-workflow/SKILL.md`
+- `.bmad-miro-auth.json` when repo-local REST auth is configured
+- `.agents/skills/bmad-miro-sync/SKILL.md`
+- `.agents/skills/bmad-miro-ingest/SKILL.md`
+- `.agents/skills/bmad-miro-collaboration/SKILL.md`
 - `docs/miro-sync.md`
-- `.gitignore` entry for `.bmad-miro-sync/`
+- `.gitignore` entries for `.bmad-miro-sync/` and `.bmad-miro-auth.json`
 
 And, by default, it patches repo-local `bmad-*` skill headers with the sync policy.
 
@@ -55,7 +57,7 @@ The current MVP provides:
 - explicit decision-record generation from normalized review bundles plus operator triage
 - deterministic implementation-readiness and handoff generation from canonical decision sidecars
 
-The current implementation does not directly call Miro from the Python CLI. Instead it exports a sync plan that a host such as Codex can execute using its Miro MCP tools, then reconciles the results back into `.bmad-miro-sync/state.json` using the exported runtime plan as the source of truth.
+The current implementation supports both host-driven publish via MCP tools and direct REST publish from the Python CLI. The direct CLI path is intended for large bootstrap runs where single-item MCP execution is too slow, and it reconciles results back into `.bmad-miro-sync/state.json` using the same exported runtime plan contract.
 
 ## Codex Plugin
 
@@ -145,6 +147,74 @@ Apply host execution results to the manifest/state file:
 PYTHONPATH=src python3 -m bmad_miro_sync apply-results --project-root . --config .bmad-miro.toml --results .bmad-miro-sync/run/results.json
 ```
 
+Execute the publish plan directly against the Miro REST API and apply the result when it completes cleanly:
+
+```bash
+MIRO_API_TOKEN=... \
+PYTHONPATH=src python3 -m bmad_miro_sync publish-direct --project-root . --config .bmad-miro.toml --plan .bmad-miro-sync/run/plan.json --results .bmad-miro-sync/run/results.json --apply-results
+```
+
+Set up repo-local Miro REST auth interactively:
+
+```bash
+PYTHONPATH=src python3 -m bmad_miro_sync setup-miro-rest-auth --project-root .
+```
+
+## REST Token Setup
+
+You do not need `MIRO_API_TOKEN` for every sync.
+
+- Use the Codex Miro MCP path when the publish run is small enough to complete comfortably with MCP item calls.
+- Use `publish-direct` only when the run is too large for practical MCP-by-MCP execution, such as an empty-board bootstrap with hundreds of creates.
+- Running `install` in an interactive terminal now offers to set up repo-local REST auth for you.
+
+Preferred setup path:
+
+1. Run `PYTHONPATH=src python3 -m bmad_miro_sync setup-miro-rest-auth --project-root .`
+2. In your Miro app settings, configure a localhost redirect URI for the CLI flow, for example `http://127.0.0.1:8899/callback`.
+3. Run the setup command and paste the Miro app install URL when prompted, or enter the client ID and that localhost redirect URI manually.
+4. Enter the client secret.
+5. Open the generated install URL in a browser and authorize the app.
+6. The setup command captures the localhost callback automatically, exchanges the code, and stores the access token in the gitignored repo-local file `.bmad-miro-auth.json`.
+
+After that, `publish-direct` automatically uses the repo-local auth file. `MIRO_API_TOKEN` is still supported and overrides the repo-local file when set.
+
+Manual setup path if you do not use the helper:
+
+When `publish-direct` is needed, `MIRO_API_TOKEN` must contain a Miro OAuth access token.
+
+To get one for testing:
+
+1. In Miro, create or confirm you have a Developer team.
+2. In Miro Settings, open `Your apps`.
+3. Create a new app in that Developer team.
+4. For a simple local test setup, choose a non-expiring user authorization token when creating the app.
+5. Configure the app enough to install it to your Developer team.
+6. Use the Miro app install flow to authorize the app and get the OAuth access token.
+7. Export that token in the shell where you will run `publish-direct`:
+
+```bash
+export MIRO_API_TOKEN='your-miro-oauth-access-token'
+```
+
+8. Verify it is present:
+
+```bash
+printenv MIRO_API_TOKEN
+```
+
+Miro’s official setup docs:
+
+- Quickstart: https://developers.miro.com/docs/rest-api-build-your-first-hello-world-app
+- OAuth overview: https://developers.miro.com/reference/overview
+- Non-expiring token flow: https://developers.miro.com/reference/authorization-flow-for-expiring-access-tokens
+
+Notes:
+
+- Miro REST API auth uses OAuth access tokens, not a separate static API-key product.
+- Non-expiring tokens are simpler for local testing.
+- Expiring tokens are better for production, but require refresh-token handling.
+
 Ingest normalized Miro comments into a review artifact:
 
 ```bash
@@ -165,12 +235,12 @@ PYTHONPATH=src python3 -m bmad_miro_sync summarize-readiness --project-root . --
 
 ## Host Workflow
 
-1. Run `run-codex-collaboration-workflow --stop-after publish` to export `plan.json`, `publish-bundle.json`, the backward-compatible `codex-bundle.json` alias, `instructions.md`, `results.template.json`, and `.bmad-miro-sync/run/collaboration-run.json`.
-2. Execute the publish plan in a host with Miro MCP access.
+1. Run the installed `bmad-miro-collaboration` skill, or run `run-codex-collaboration-workflow --stop-after publish`, to export `plan.json`, `publish-bundle.json`, the backward-compatible `codex-bundle.json` alias, `instructions.md`, `results.template.json`, and `.bmad-miro-sync/run/collaboration-run.json`.
+2. Execute the publish plan in a host with Miro MCP access, or use `publish-direct` when `MIRO_API_TOKEN` is available and the run is too large for practical MCP-by-MCP creation.
 3. Save execution results as `.bmad-miro-sync/run/results.json` with `run_status`, `executed_at`, optional `warnings` and `object_strategies`, and one item entry per executed operation.
 4. Fetch and normalize comments into `.bmad-miro-sync/run/comments.json`.
 5. Add triage metadata in `.bmad-miro-sync/run/review-input.json`.
-6. Resume `run-codex-collaboration-workflow --start-at apply-results` to update `.bmad-miro-sync/state.json`, ingest comments, generate decision records, and generate readiness outputs.
+6. Resume `run-codex-collaboration-workflow --start-at apply-results`, typically via the installed `bmad-miro-collaboration` skill, to update `.bmad-miro-sync/state.json`, ingest comments, generate decision records, and generate readiness outputs.
 
 `apply-results` now reads `.bmad-miro-sync/run/plan.json` by default so missing result entries are persisted as explicit pending operations instead of disappearing silently.
 

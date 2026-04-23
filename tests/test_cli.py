@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from urllib.parse import parse_qsl
+from urllib.request import urlopen
 
 
 CONFIG_TEXT = """
@@ -509,6 +513,474 @@ source_paths = [\"{outside_root}\", \"_bmad-output/planning-artifacts\"]
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Comments input must include a 'comments' list.", result.stderr)
+
+
+class _MiroApiTestServer(HTTPServer):
+    def __init__(self, server_address: tuple[str, int], fail_bulk: bool = False) -> None:
+        super().__init__(server_address, _MiroApiTestHandler)
+        self.calls: list[dict[str, object]] = []
+        self.fail_bulk = fail_bulk
+
+
+class _MiroApiTestHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:  # noqa: N802
+        raw_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(raw_length).decode("utf-8") if raw_length else ""
+        payload = json.loads(body) if body and self.headers.get("Content-Type") == "application/json" else body
+        self.server.calls.append({"method": "POST", "path": self.path, "body": payload})
+
+        if self.path == "/v1/oauth/token":
+            params = parse_form_body(body)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "access_token": "oauth-access-token",
+                        "token_type": "bearer",
+                        "scope": "boards:read boards:write",
+                        "expires_in": 3600,
+                        "redirect_uri": params.get("redirect_uri"),
+                    }
+                ).encode("utf-8")
+            )
+            return
+
+        if self.path.endswith("/items/bulk") and self.server.fail_bulk:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"message": "bulk create failed"}).encode("utf-8"))
+            return
+
+        if self.path.endswith("/items/bulk"):
+            data = []
+            for index, item in enumerate(payload or []):
+                item_type = item["type"]
+                prefix = "shape" if item_type == "shape" else "text"
+                geometry = item.get("geometry", {})
+                position = item.get("position", {})
+                data.append(
+                    {
+                        "id": f"{prefix}-{index + 1}",
+                        "type": item_type,
+                        "createdAt": "2026-04-23T10:00:00Z",
+                        "geometry": {
+                            "width": geometry.get("width"),
+                            "height": geometry.get("height"),
+                        },
+                        "position": {
+                            "x": position.get("x"),
+                            "y": position.get("y"),
+                        },
+                    }
+                )
+            self.send_response(201)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"data": data}).encode("utf-8"))
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+        return
+
+
+class CliPublishDirectTests(unittest.TestCase):
+    def test_setup_miro_rest_auth_captures_localhost_callback_automatically(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath)
+
+            server = _MiroApiTestServer(("127.0.0.1", 0))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            callback_port = 8899
+            callback_thread: threading.Thread | None = None
+            try:
+                result_holder: dict[str, subprocess.CompletedProcess[str]] = {}
+
+                def run_setup() -> None:
+                    result_holder["result"] = subprocess.run(
+                        [
+                            sys.executable,
+                            "-m",
+                            "bmad_miro_sync",
+                            "setup-miro-rest-auth",
+                            "--project-root",
+                            str(root),
+                            "--client-id",
+                            "3458764669066385754",
+                            "--client-secret",
+                            "secret-value",
+                            "--redirect-uri",
+                            f"http://127.0.0.1:{callback_port}/callback",
+                            "--token-endpoint",
+                            f"http://127.0.0.1:{server.server_port}/v1/oauth/token",
+                            "--callback-timeout",
+                            "10",
+                        ],
+                        cwd=root,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+
+                callback_thread = threading.Thread(target=run_setup, daemon=True)
+                callback_thread.start()
+
+                _wait_for_port(callback_port)
+                with urlopen(f"http://127.0.0.1:{callback_port}/callback?code=auto-code-123") as response:
+                    self.assertEqual(response.status, 200)
+
+                callback_thread.join(timeout=10)
+                self.assertIn("result", result_holder)
+                result = result_holder["result"]
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+                if callback_thread is not None:
+                    callback_thread.join(timeout=1)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["redirect_uri"], f"http://127.0.0.1:{callback_port}/callback")
+            auth_payload = json.loads((root / ".bmad-miro-auth.json").read_text(encoding="utf-8"))
+            self.assertEqual(auth_payload["access_token"], "oauth-access-token")
+
+    def test_setup_miro_rest_auth_writes_repo_local_auth_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath)
+
+            server = _MiroApiTestServer(("127.0.0.1", 0))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "bmad_miro_sync",
+                        "setup-miro-rest-auth",
+                        "--project-root",
+                        str(root),
+                        "--install-url",
+                        "https://miro.com/app-install/?response_type=code&client_id=3458764669066385754&redirect_uri=%2Fapp-install%2Fconfirm%2F",
+                        "--client-secret",
+                        "secret-value",
+                        "--redirected-url",
+                        "https://miro.com/app-install/confirm/?code=abc123",
+                        "--token-endpoint",
+                        f"http://127.0.0.1:{server.server_port}/v1/oauth/token",
+                    ],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["client_id"], "3458764669066385754")
+            auth_payload = json.loads((root / ".bmad-miro-auth.json").read_text(encoding="utf-8"))
+            self.assertEqual(auth_payload["access_token"], "oauth-access-token")
+            self.assertEqual(auth_payload["client_id"], "3458764669066385754")
+            self.assertEqual(auth_payload["redirect_uri"], "/app-install/confirm/")
+
+    def test_publish_direct_uses_bulk_create_and_applies_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath, MIRO_API_TOKEN="test-token")
+            runtime_dir = root / ".bmad-miro-sync/run"
+            runtime_dir.mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            plan_path = runtime_dir / "plan.json"
+            plan_path.write_text(json.dumps(_sample_publish_plan(root), indent=2) + "\n", encoding="utf-8")
+
+            server = _MiroApiTestServer(("127.0.0.1", 0))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "bmad_miro_sync",
+                        "publish-direct",
+                        "--project-root",
+                        str(root),
+                        "--config",
+                        str(root / ".bmad-miro.toml"),
+                        "--plan",
+                        str(plan_path),
+                        "--results",
+                        ".bmad-miro-sync/run/results.json",
+                        "--api-base-url",
+                        f"http://127.0.0.1:{server.server_port}",
+                        "--apply-results",
+                    ],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(server.calls), 1)
+            self.assertEqual(server.calls[0]["path"], "/v2/boards/uXjVGixS6vQ=/items/bulk")
+            self.assertEqual(len(server.calls[0]["body"]), 2)
+            results_payload = json.loads((runtime_dir / "results.json").read_text(encoding="utf-8"))
+            self.assertEqual(results_payload["run_status"], "complete")
+            self.assertEqual(len(results_payload["items"]), 2)
+            state = json.loads((root / ".bmad-miro-sync/state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["last_run"]["run_status"], "complete")
+            self.assertEqual(state["items"]["_bmad-output/planning-artifacts/prd.md#prd"]["host_item_type"], "text")
+            self.assertEqual(state["items"]["workstream:planning:product"]["host_item_type"], "shape")
+
+    def test_publish_direct_uses_repo_local_auth_file_when_env_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath)
+            env.pop("MIRO_API_TOKEN", None)
+            runtime_dir = root / ".bmad-miro-sync/run"
+            runtime_dir.mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            (root / ".bmad-miro-auth.json").write_text(
+                json.dumps({"access_token": "repo-token"}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            plan_path = runtime_dir / "plan.json"
+            plan_path.write_text(json.dumps(_sample_publish_plan(root), indent=2) + "\n", encoding="utf-8")
+
+            server = _MiroApiTestServer(("127.0.0.1", 0))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "bmad_miro_sync",
+                        "publish-direct",
+                        "--project-root",
+                        str(root),
+                        "--config",
+                        str(root / ".bmad-miro.toml"),
+                        "--plan",
+                        str(plan_path),
+                        "--results",
+                        ".bmad-miro-sync/run/results.json",
+                        "--api-base-url",
+                        f"http://127.0.0.1:{server.server_port}",
+                    ],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(server.calls), 1)
+            self.assertEqual(
+                server.calls[0]["path"],
+                "/v2/boards/uXjVGixS6vQ=/items/bulk",
+            )
+
+    def test_publish_direct_keeps_failed_results_without_applying_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath, MIRO_API_TOKEN="test-token")
+            runtime_dir = root / ".bmad-miro-sync/run"
+            runtime_dir.mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            plan_path = runtime_dir / "plan.json"
+            plan_path.write_text(json.dumps(_sample_publish_plan(root), indent=2) + "\n", encoding="utf-8")
+
+            server = _MiroApiTestServer(("127.0.0.1", 0), fail_bulk=True)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "bmad_miro_sync",
+                        "publish-direct",
+                        "--project-root",
+                        str(root),
+                        "--config",
+                        str(root / ".bmad-miro.toml"),
+                        "--plan",
+                        str(plan_path),
+                        "--results",
+                        ".bmad-miro-sync/run/results.json",
+                        "--api-base-url",
+                        f"http://127.0.0.1:{server.server_port}",
+                        "--apply-results",
+                    ],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("did not complete cleanly", result.stderr)
+            results_payload = json.loads((runtime_dir / "results.json").read_text(encoding="utf-8"))
+            self.assertEqual(results_payload["run_status"], "failed")
+            self.assertEqual(results_payload["items"][0]["execution_status"], "failed")
+            self.assertFalse((root / ".bmad-miro-sync/state.json").exists())
+
+
+def _sample_publish_plan(root: Path) -> dict[str, object]:
+    artifact_id = "_bmad-output/planning-artifacts/prd.md#prd"
+    source_artifact_id = "_bmad-output/planning-artifacts/prd.md"
+    return {
+        "board_url": "https://miro.com/app/board/uXjVGixS6vQ=/",
+        "project_root": str(root),
+        "config_path": str(root / ".bmad-miro.toml"),
+        "manifest_path": ".bmad-miro-sync/state.json",
+        "warnings": [],
+        "object_strategies": [],
+        "artifacts": [
+            {
+                "artifact_id": artifact_id,
+                "source_artifact_id": source_artifact_id,
+                "title": "PRD",
+                "kind": "prd",
+                "phase": "planning",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "collaboration_intent": "anchor",
+                "relative_path": source_artifact_id,
+                "sha256": "sha-123",
+                "source_type": "file",
+                "heading_level": 1,
+                "parent_artifact_id": None,
+                "section_path": ["prd"],
+                "section_title_path": ["PRD"],
+                "section_slug": "prd",
+                "section_sibling_index": 1,
+                "lineage_key": "prd",
+                "lineage_status": "new",
+                "previous_artifact_id": None,
+                "previous_parent_artifact_id": None,
+            }
+        ],
+        "operations": [
+            {
+                "op_id": "workstream:planning:product",
+                "action": "ensure_workstream_anchor",
+                "item_type": "workstream_anchor",
+                "title": "Product",
+                "phase": "planning",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "collaboration_intent": "orientation",
+                "artifact_id": "workstream:planning:product",
+                "source_artifact_id": "workstream:planning:product",
+                "target_key": "workstream:planning:product",
+                "container_target_key": None,
+                "object_family": "workstream_anchor",
+                "preferred_item_type": "workstream_anchor",
+                "resolved_item_type": "workstream_anchor",
+                "degraded": False,
+                "fallback_reason": None,
+                "degraded_warning": None,
+                "status": "pending",
+                "lifecycle_state": "active",
+                "deterministic_order": {
+                    "zone_rank": 1,
+                    "workstream_rank": 1,
+                    "object_rank": 1,
+                    "artifact_rank": 0,
+                    "section_rank": 0,
+                },
+            },
+            {
+                "op_id": f"doc:{artifact_id}",
+                "action": "create_doc",
+                "item_type": "doc",
+                "title": "PRD",
+                "phase": "planning",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "collaboration_intent": "anchor",
+                "artifact_id": artifact_id,
+                "source_artifact_id": source_artifact_id,
+                "target_key": f"artifact:{artifact_id}",
+                "container_target_key": "workstream:planning:product",
+                "content": "# PRD\n\nBody\n",
+                "object_family": "artifact_content",
+                "preferred_item_type": "doc",
+                "resolved_item_type": "doc",
+                "degraded": False,
+                "fallback_reason": None,
+                "degraded_warning": None,
+                "status": "pending",
+                "lifecycle_state": "active",
+                "heading_level": 1,
+                "parent_artifact_id": None,
+                "deterministic_order": {
+                    "zone_rank": 1,
+                    "workstream_rank": 1,
+                    "object_rank": 2,
+                    "artifact_rank": 1,
+                    "section_rank": 1,
+                },
+            },
+        ],
+    }
+
+
+def parse_form_body(body: str) -> dict[str, str]:
+    values = {}
+    for key, raw_value in parse_qsl(body, keep_blank_values=True):
+        values[key] = raw_value
+    return values
+
+
+def _wait_for_port(port: int, *, attempts: int = 50) -> None:
+    import socket
+    import time
+
+    for _ in range(attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            if sock.connect_ex(("127.0.0.1", port)) == 0:
+                return
+        time.sleep(0.1)
+    raise AssertionError(f"Timed out waiting for localhost:{port}")
 
     def test_ingest_comments_rejects_empty_comment_objects(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
