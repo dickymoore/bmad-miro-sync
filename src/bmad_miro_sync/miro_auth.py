@@ -8,6 +8,7 @@ from pathlib import Path
 import threading
 from typing import Any
 from urllib import error, parse, request
+import webbrowser
 
 
 DEFAULT_AUTH_PATH = ".bmad-miro-auth.json"
@@ -62,12 +63,13 @@ def build_install_url(client_id: str, redirect_uri: str, *, install_base_url: st
     return f"{install_base_url}{separator}{query}"
 
 
-def parse_install_url(install_url: str) -> tuple[str, str]:
+def parse_install_url(install_url: str) -> tuple[str, str, str]:
     parsed = parse.urlparse(install_url)
     query = parse.parse_qs(parsed.query)
     client_id = _require_single_query_value(query, "client_id", "install URL")
     redirect_uri = _require_single_query_value(query, "redirect_uri", "install URL")
-    return client_id, redirect_uri
+    base_url = parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+    return client_id, redirect_uri, base_url or DEFAULT_INSTALL_BASE_URL
 
 
 def parse_authorization_code(value: str) -> str:
@@ -143,18 +145,21 @@ def interactive_setup(
 ) -> dict[str, Any]:
     resolved_client_id = client_id
     resolved_redirect_uri = redirect_uri
+    install_base_url = DEFAULT_INSTALL_BASE_URL
 
     if install_url:
-        parsed_client_id, parsed_redirect_uri = parse_install_url(install_url)
+        parsed_client_id, parsed_redirect_uri, parsed_install_base_url = parse_install_url(install_url)
         resolved_client_id = resolved_client_id or parsed_client_id
         resolved_redirect_uri = resolved_redirect_uri or parsed_redirect_uri
+        install_base_url = parsed_install_base_url or install_base_url
 
     if not resolved_client_id:
         install_url = _prompt("Paste the Miro app install URL (or leave blank to enter values manually): ").strip()
         if install_url:
-            parsed_client_id, parsed_redirect_uri = parse_install_url(install_url)
+            parsed_client_id, parsed_redirect_uri, parsed_install_base_url = parse_install_url(install_url)
             resolved_client_id = parsed_client_id
             resolved_redirect_uri = resolved_redirect_uri or parsed_redirect_uri
+            install_base_url = parsed_install_base_url or install_base_url
 
     if not resolved_client_id:
         resolved_client_id = _prompt("Miro Client ID: ").strip()
@@ -166,10 +171,15 @@ def interactive_setup(
             _prompt(f"Miro redirect URI [{DEFAULT_LOCAL_REDIRECT_URI}]: ").strip() or DEFAULT_LOCAL_REDIRECT_URI
         )
 
-    resolved_install_url = install_url or build_install_url(resolved_client_id, resolved_redirect_uri)
+    resolved_install_url = build_install_url(
+        resolved_client_id,
+        resolved_redirect_uri,
+        install_base_url=install_base_url,
+    )
     if redirected_value is None and announce:
         print("\nOpen this Miro authorization URL in your browser:\n")
         print(resolved_install_url)
+        _try_open_browser(resolved_install_url)
         if _is_local_callback_uri(resolved_redirect_uri):
             print(
                 "\nAuthorize the app in your browser. The local callback server will capture the code automatically.\n"
@@ -220,6 +230,15 @@ def interactive_setup(
 
 def _prompt(message: str) -> str:
     return input(message)
+
+
+def _try_open_browser(url: str) -> None:
+    try:
+        opened = webbrowser.open(url, new=1, autoraise=True)
+    except Exception:
+        return
+    if opened:
+        print("\nOpened the authorization URL in your browser.\n")
 
 
 def _is_local_callback_uri(redirect_uri: str) -> bool:

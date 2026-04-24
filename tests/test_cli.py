@@ -695,10 +695,57 @@ class CliPublishDirectTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads(result.stdout)
             self.assertEqual(payload["client_id"], "3458764669066385754")
+            self.assertIn("redirect_uri=%2Fapp-install%2Fconfirm%2F", payload["install_url"])
             auth_payload = json.loads((root / ".bmad-miro-auth.json").read_text(encoding="utf-8"))
             self.assertEqual(auth_payload["access_token"], "oauth-access-token")
             self.assertEqual(auth_payload["client_id"], "3458764669066385754")
             self.assertEqual(auth_payload["redirect_uri"], "/app-install/confirm/")
+
+    def test_setup_miro_rest_auth_rebuilds_install_url_for_explicit_localhost_redirect(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath)
+
+            server = _MiroApiTestServer(("127.0.0.1", 0))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "bmad_miro_sync",
+                        "setup-miro-rest-auth",
+                        "--project-root",
+                        str(root),
+                        "--install-url",
+                        "https://miro.com/app-install/?response_type=code&client_id=3458764669066385754&redirect_uri=%2Fapp-install%2Fconfirm%2F",
+                        "--client-secret",
+                        "secret-value",
+                        "--redirect-uri",
+                        "http://127.0.0.1:8899/callback",
+                        "--redirected-url",
+                        "http://127.0.0.1:8899/callback?code=abc123",
+                        "--token-endpoint",
+                        f"http://127.0.0.1:{server.server_port}/v1/oauth/token",
+                    ],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertIn("redirect_uri=http%3A%2F%2F127.0.0.1%3A8899%2Fcallback", payload["install_url"])
+            auth_payload = json.loads((root / ".bmad-miro-auth.json").read_text(encoding="utf-8"))
+            self.assertEqual(auth_payload["redirect_uri"], "http://127.0.0.1:8899/callback")
 
     def test_publish_direct_uses_bulk_create_and_applies_results(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
