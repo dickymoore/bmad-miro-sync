@@ -39,6 +39,31 @@ manifest_path = ".bmad-miro-sync/state.json"
 
 [layout]
 create_phase_frames = true
+#doc_width = 680
+#table_width = 840
+#content_start_y = 260
+#content_gap_y = 120
+#fragment_indent_x = 140
+#fragment_gap_y = 90
+
+#[layout.phase_y]
+#analysis = -1800
+#planning = -600
+#solutioning = 600
+#implementation = 1800
+
+#[layout.workstream_x]
+#general = -2400
+#product = -1200
+#ux = 0
+#architecture = 1200
+#delivery = 2400
+
+#[layout.phase_colors]
+#analysis = "#d5f692"
+#planning = "#a6ccf5"
+#solutioning = "#fff9b1"
+#implementation = "#ffcee0"
 
 [publish]
 analysis = true

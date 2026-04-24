@@ -5,10 +5,12 @@ import html
 import json
 import os
 from pathlib import Path
+import re
 import time
 from typing import Any
 from urllib import error, parse, request
 
+from .config import LayoutConfig
 from .miro_auth import DEFAULT_AUTH_PATH, load_repo_auth_token
 
 
@@ -18,33 +20,12 @@ DEFAULT_RESULTS_PATH = ".bmad-miro-sync/run/results.json"
 _BULK_CREATE_LIMIT = 20
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 5
-_PHASE_Y = {
-    "analysis": -1800.0,
-    "planning": -600.0,
-    "solutioning": 600.0,
-    "implementation": 1800.0,
-}
-_WORKSTREAM_X = {
-    "general": -1800.0,
-    "product": -900.0,
-    "ux": 0.0,
-    "engineering": 900.0,
-    "qa": 1800.0,
-}
 _HOST_ITEM_TYPES = {
     "doc": "text",
     "table": "text",
     "zone": "shape",
     "workstream_anchor": "shape",
 }
-_PHASE_COLORS = {
-    "analysis": "#d5f692",
-    "planning": "#a6ccf5",
-    "solutioning": "#fff9b1",
-    "implementation": "#ffcee0",
-}
-
-
 class MiroApiError(RuntimeError):
     pass
 
@@ -87,9 +68,11 @@ def execute_publish_plan(
     plan: dict[str, Any],
     *,
     token: str,
+    layout: LayoutConfig | None = None,
     api_base_url: str = DEFAULT_API_BASE_URL,
     stop_on_error: bool = True,
 ) -> dict[str, Any]:
+    resolved_layout = layout or LayoutConfig()
     board_url = _require_str(plan.get("board_url"), "plan.board_url")
     board_id = board_id_from_url(board_url)
     client = MiroApiClient(api_base_url=api_base_url, token=token)
@@ -97,7 +80,10 @@ def execute_publish_plan(
     executed_items: list[dict[str, Any]] = []
     successful_count = 0
     warnings = list(plan.get("warnings", [])) if isinstance(plan.get("warnings"), list) else []
-    operations = [operation for operation in plan.get("operations", []) if isinstance(operation, dict)]
+    operations = _apply_layout_positions(
+        [operation for operation in plan.get("operations", []) if isinstance(operation, dict)],
+        resolved_layout,
+    )
     create_ops: list[dict[str, Any]] = []
 
     def flush_create_ops() -> tuple[bool, str | None]:
@@ -111,6 +97,7 @@ def execute_publish_plan(
             board_url=board_url,
             operations=create_ops,
             artifact_index=artifact_index,
+            layout=resolved_layout,
         )
         if created_items:
             executed_items.extend(created_items)
@@ -152,6 +139,7 @@ def execute_publish_plan(
                 board_url=board_url,
                 operation=operation,
                 artifact=artifact_index.get(operation.get("artifact_id")),
+                layout=resolved_layout,
             )
         except MiroApiError as exc:
             executed_items.append(_failed_result_entry(plan, operation, artifact_index.get(operation.get("artifact_id")), str(exc)))
@@ -263,8 +251,9 @@ def _execute_create_batch(
     board_url: str,
     operations: list[dict[str, Any]],
     artifact_index: dict[str, dict[str, Any]],
+    layout: LayoutConfig,
 ) -> tuple[bool, str | None, list[dict[str, Any]]]:
-    payload = [_create_payload_for_operation(operation, index=index) for index, operation in enumerate(operations)]
+    payload = [_create_payload_for_operation(operation, layout=layout, index=index) for index, operation in enumerate(operations)]
     try:
         response_items = client.bulk_create_items(board_id, payload)
     except MiroApiError as exc:
@@ -299,6 +288,7 @@ def _execute_single_operation(
     board_url: str,
     operation: dict[str, Any],
     artifact: dict[str, Any] | None,
+    layout: LayoutConfig,
 ) -> dict[str, Any]:
     action = _require_str(operation.get("action"), "operation.action")
     existing_item = operation.get("existing_item") if isinstance(operation.get("existing_item"), dict) else {}
@@ -309,7 +299,7 @@ def _execute_single_operation(
 
     if action.startswith("update_"):
         item_id = _require_str(existing_item.get("item_id"), f"{action} existing_item.item_id")
-        payload = _update_payload_for_operation(operation)
+        payload = _update_payload_for_operation(operation, layout=layout)
         if host_item_type == "text":
             response = client.update_text(board_id, item_id, payload)
         elif host_item_type == "shape":
@@ -330,7 +320,7 @@ def _execute_single_operation(
         )
 
     if action.startswith(("create_", "ensure_")):
-        payload = _create_payload_for_operation(operation)
+        payload = _create_payload_for_operation(operation, layout=layout)
         if host_item_type == "text":
             response = client.create_text(board_id, payload)
         elif host_item_type == "shape":
@@ -342,14 +332,14 @@ def _execute_single_operation(
     raise MiroApiError(f"Unsupported publish action: {action}")
 
 
-def _create_payload_for_operation(operation: dict[str, Any], *, index: int = 0) -> dict[str, Any]:
+def _create_payload_for_operation(operation: dict[str, Any], *, layout: LayoutConfig, index: int = 0) -> dict[str, Any]:
     host_item_type = _host_item_type(operation, {})
     if host_item_type == "text":
         payload = {
             "type": "text",
             "data": {"content": _operation_content_html(operation)},
-            "position": _position_payload(operation, index=index),
-            "geometry": {"width": _content_width(operation)},
+            "position": _position_payload(operation, layout=layout, index=index),
+            "geometry": {"width": _content_width(operation, layout=layout)},
             "style": {
                 "textAlign": "left",
                 "fillOpacity": "0.0",
@@ -365,22 +355,22 @@ def _create_payload_for_operation(operation: dict[str, Any], *, index: int = 0) 
                 "content": _shape_content_html(operation),
                 "shape": "round_rectangle",
             },
-            "position": _position_payload(operation, index=index),
+            "position": _position_payload(operation, layout=layout, index=index),
             "geometry": _shape_geometry(operation),
-            "style": _shape_style(operation),
+            "style": _shape_style(operation, layout=layout),
         }
         return payload
 
     raise MiroApiError(f"Unsupported host item type for create payload: {host_item_type}")
 
 
-def _update_payload_for_operation(operation: dict[str, Any]) -> dict[str, Any]:
+def _update_payload_for_operation(operation: dict[str, Any], *, layout: LayoutConfig) -> dict[str, Any]:
     existing_item = operation.get("existing_item") if isinstance(operation.get("existing_item"), dict) else {}
     host_item_type = _host_item_type(operation, existing_item)
     if host_item_type == "text":
         payload = {
             "data": {"content": _operation_content_html(operation)},
-            "geometry": {"width": _content_width(operation, existing_item)},
+            "geometry": {"width": _content_width(operation, layout=layout, existing_item=existing_item)},
         }
         return payload
 
@@ -391,7 +381,7 @@ def _update_payload_for_operation(operation: dict[str, Any]) -> dict[str, Any]:
                 "shape": "round_rectangle",
             },
             "geometry": _shape_geometry(operation, existing_item),
-            "style": _shape_style(operation),
+            "style": _shape_style(operation, layout=layout),
         }
         return payload
 
@@ -647,8 +637,8 @@ def _artifact_sha256(
     return None
 
 
-def _position_payload(operation: dict[str, Any], *, index: int) -> dict[str, Any]:
-    x, y = _auto_position(operation, index=index)
+def _position_payload(operation: dict[str, Any], *, layout: LayoutConfig, index: int) -> dict[str, Any]:
+    x, y = _planned_position(operation, layout=layout, index=index)
     return {
         "origin": "center",
         "x": x,
@@ -656,20 +646,21 @@ def _position_payload(operation: dict[str, Any], *, index: int) -> dict[str, Any
     }
 
 
-def _auto_position(operation: dict[str, Any], *, index: int) -> tuple[float, float]:
-    phase = operation.get("phase_zone") or "planning"
-    workstream = operation.get("workstream") or "general"
-    base_x = _WORKSTREAM_X.get(str(workstream), 0.0)
-    base_y = _PHASE_Y.get(str(phase), 0.0)
+def _planned_position(operation: dict[str, Any], *, layout: LayoutConfig, index: int) -> tuple[float, float]:
+    planned = operation.get("planned_position")
+    if isinstance(planned, dict) and planned.get("x") is not None and planned.get("y") is not None:
+        return float(planned["x"]), float(planned["y"])
+    phase = str(operation.get("phase_zone") or "planning")
+    workstream = str(operation.get("workstream") or "general")
+    base_x = layout.workstream_x.get(workstream, 0.0)
+    base_y = layout.phase_y.get(phase, 0.0)
     action = operation.get("action")
     if action == "ensure_zone":
         return 0.0, base_y
     if action == "ensure_workstream_anchor":
         return base_x, base_y
     artifact_index = _deterministic_index(operation)
-    column = artifact_index % 2
-    row = artifact_index // 2
-    return base_x + (column * 720.0) - 240.0, base_y + 220.0 + (row * 260.0)
+    return base_x, base_y + layout.content_start_y + (artifact_index * (layout.min_card_height + layout.content_gap_y))
 
 
 def _deterministic_index(operation: dict[str, Any]) -> int:
@@ -681,14 +672,73 @@ def _deterministic_index(operation: dict[str, Any]) -> int:
     return int(artifact_rank) * 10 + int(section_rank)
 
 
-def _content_width(operation: dict[str, Any], existing_item: dict[str, Any] | None = None) -> float:
+def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConfig) -> list[dict[str, Any]]:
+    lane_y: dict[tuple[str, str], float] = {}
+    planned_operations: list[dict[str, Any]] = []
+
+    for operation in operations:
+        planned = dict(operation)
+        action = str(planned.get("action") or "")
+        phase_zone = str(planned.get("phase_zone") or "planning")
+        workstream = str(planned.get("workstream") or "general")
+        phase_y = layout.phase_y.get(phase_zone, 0.0)
+        workstream_x = layout.workstream_x.get(workstream, 0.0)
+
+        if action == "ensure_zone":
+            planned["planned_position"] = {"x": 0.0, "y": phase_y}
+        elif action == "ensure_workstream_anchor":
+            planned["planned_position"] = {"x": workstream_x, "y": phase_y}
+        elif action.startswith(("create_", "ensure_")) and planned.get("item_type") in {"doc", "table"}:
+            lane_key = (phase_zone, workstream)
+            current_y = lane_y.get(lane_key, phase_y + layout.content_start_y)
+            current_x = workstream_x
+            if _is_split_fragment(planned):
+                current_x += layout.fragment_indent_x
+            planned["planned_position"] = {"x": current_x, "y": current_y}
+            estimated_height = _estimated_content_height(planned, layout=layout)
+            lane_y[lane_key] = current_y + estimated_height + (
+                layout.fragment_gap_y if _is_split_fragment(planned) else layout.content_gap_y
+            )
+        planned_operations.append(planned)
+
+    return planned_operations
+
+
+def _is_split_fragment(operation: dict[str, Any]) -> bool:
+    artifact_id = operation.get("artifact_id")
+    if isinstance(artifact_id, str) and "::part-" in artifact_id:
+        return True
+    return False
+
+
+def _estimated_content_height(operation: dict[str, Any], *, layout: LayoutConfig) -> float:
+    if operation.get("item_type") == "table":
+        rows = operation.get("rows") if isinstance(operation.get("rows"), list) else []
+        return max(layout.min_card_height, 120.0 + (len(rows) * 44.0))
+
+    content_html = _operation_content_html(operation)
+    plain_text = re.sub(r"<[^>]+>", " ", content_html)
+    plain_text = re.sub(r"\s+", " ", plain_text).strip()
+    estimated_lines = max(
+        3,
+        int(max(len(plain_text), 1) / max(layout.chars_per_line, 20.0)),
+    )
+    return max(layout.min_card_height, 100.0 + (estimated_lines * 24.0))
+
+
+def _content_width(
+    operation: dict[str, Any],
+    *,
+    layout: LayoutConfig,
+    existing_item: dict[str, Any] | None = None,
+) -> float:
     if existing_item:
         snapshot = existing_item.get("layout_snapshot")
         if isinstance(snapshot, dict) and snapshot.get("width") is not None:
             return float(snapshot["width"])
     if operation.get("item_type") == "table":
-        return 840.0
-    return 680.0
+        return layout.table_width
+    return layout.doc_width
 
 
 def _shape_geometry(operation: dict[str, Any], existing_item: dict[str, Any] | None = None) -> dict[str, float]:
@@ -704,10 +754,10 @@ def _shape_geometry(operation: dict[str, Any], existing_item: dict[str, Any] | N
     return {"width": 360.0, "height": 120.0}
 
 
-def _shape_style(operation: dict[str, Any]) -> dict[str, Any]:
+def _shape_style(operation: dict[str, Any], *, layout: LayoutConfig) -> dict[str, Any]:
     phase_zone = str(operation.get("phase_zone") or "planning")
     return {
-        "fillColor": _PHASE_COLORS.get(phase_zone, "#f5f6f8"),
+        "fillColor": layout.phase_colors.get(phase_zone, "#f5f6f8"),
         "fillOpacity": "1.0",
         "borderColor": "#1a1a1a",
         "borderStyle": "normal",

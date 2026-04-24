@@ -858,6 +858,76 @@ class CliPublishDirectTests(unittest.TestCase):
                 "/v2/boards/uXjVGixS6vQ=/items/bulk",
             )
 
+    def test_publish_direct_respects_layout_config_for_colors_positions_and_widths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath, MIRO_API_TOKEN="test-token")
+            runtime_dir = root / ".bmad-miro-sync/run"
+            runtime_dir.mkdir(parents=True)
+            config_text = CONFIG_TEXT.replace(
+                "[layout]\ncreate_phase_frames = true\n",
+                "[layout]\n"
+                "create_phase_frames = true\n"
+                "doc_width = 720\n"
+                "content_start_y = 320\n"
+                "fragment_indent_x = 180\n",
+            )
+            config_text += """
+[layout.phase_y]
+planning = -250
+
+[layout.workstream_x]
+product = 150
+
+[layout.phase_colors]
+planning = "#123456"
+"""
+            (root / ".bmad-miro.toml").write_text(config_text, encoding="utf-8")
+            plan_path = runtime_dir / "plan.json"
+            plan_path.write_text(json.dumps(_sample_publish_plan(root), indent=2) + "\n", encoding="utf-8")
+
+            server = _MiroApiTestServer(("127.0.0.1", 0))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "bmad_miro_sync",
+                        "publish-direct",
+                        "--project-root",
+                        str(root),
+                        "--config",
+                        str(root / ".bmad-miro.toml"),
+                        "--plan",
+                        str(plan_path),
+                        "--results",
+                        ".bmad-miro-sync/run/results.json",
+                        "--api-base-url",
+                        f"http://127.0.0.1:{server.server_port}",
+                    ],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            bulk_payload = server.calls[0]["body"]
+            self.assertEqual(bulk_payload[0]["position"]["x"], 150.0)
+            self.assertEqual(bulk_payload[0]["position"]["y"], -250.0)
+            self.assertEqual(bulk_payload[0]["style"]["fillColor"], "#123456")
+            self.assertEqual(bulk_payload[1]["position"]["x"], 150.0)
+            self.assertEqual(bulk_payload[1]["position"]["y"], 70.0)
+            self.assertEqual(bulk_payload[1]["geometry"]["width"], 720.0)
+
     def test_publish_direct_keeps_failed_results_without_applying_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

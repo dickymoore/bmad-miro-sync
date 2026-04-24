@@ -332,6 +332,7 @@ def main() -> int:
             results = execute_publish_plan(
                 plan,
                 token=token,
+                layout=config.layout,
                 api_base_url=args.api_base_url,
             )
         except MiroApiError as exc:

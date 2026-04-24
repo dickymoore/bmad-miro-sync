@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import tomllib
 
@@ -9,6 +9,47 @@ import tomllib
 class ObjectStrategyConfig:
     phase_zone: str = "zone"
     story_summary: str = "table"
+
+
+@dataclass(slots=True, frozen=True)
+class LayoutConfig:
+    phase_y: dict[str, float] = field(
+        default_factory=lambda: {
+            "analysis": -1800.0,
+            "planning": -600.0,
+            "solutioning": 600.0,
+            "implementation": 1800.0,
+            "implementation_readiness": 1800.0,
+            "delivery_feedback": 2400.0,
+        }
+    )
+    workstream_x: dict[str, float] = field(
+        default_factory=lambda: {
+            "general": -2400.0,
+            "product": -1200.0,
+            "ux": 0.0,
+            "architecture": 1200.0,
+            "delivery": 2400.0,
+        }
+    )
+    phase_colors: dict[str, str] = field(
+        default_factory=lambda: {
+            "analysis": "#d5f692",
+            "planning": "#a6ccf5",
+            "solutioning": "#fff9b1",
+            "implementation": "#ffcee0",
+            "implementation_readiness": "#ffcee0",
+            "delivery_feedback": "#f5d2ff",
+        }
+    )
+    doc_width: float = 680.0
+    table_width: float = 840.0
+    content_start_y: float = 260.0
+    content_gap_y: float = 120.0
+    fragment_indent_x: float = 140.0
+    fragment_gap_y: float = 90.0
+    min_card_height: float = 180.0
+    chars_per_line: float = 72.0
 
 
 @dataclass(slots=True)
@@ -20,6 +61,7 @@ class SyncConfig:
     manifest_path: str = ".bmad-miro-sync/state.json"
     object_strategies: ObjectStrategyConfig = ObjectStrategyConfig()
     create_phase_frames: bool = True
+    layout: LayoutConfig = field(default_factory=LayoutConfig)
     publish_analysis: bool = True
     publish_planning: bool = True
     publish_solutioning: bool = True
@@ -59,6 +101,7 @@ def load_config(config_path: str | Path, *, project_root: str | Path | None = No
         manifest_path=data.get("manifest_path", ".bmad-miro-sync/state.json"),
         object_strategies=resolved_strategies,
         create_phase_frames=resolved_strategies.phase_zone == "zone",
+        layout=_resolve_layout_config(layout),
         publish_analysis=publish.get("analysis", True),
         publish_planning=publish.get("planning", True),
         publish_solutioning=publish.get("solutioning", True),
@@ -69,6 +112,25 @@ def load_config(config_path: str | Path, *, project_root: str | Path | None = No
     if project_root is not None:
         _validate_repo_local_config_paths(config, project_root=project_root)
     return config
+
+
+def _resolve_layout_config(layout: object) -> LayoutConfig:
+    if not isinstance(layout, dict):
+        return LayoutConfig()
+    defaults = LayoutConfig()
+    return LayoutConfig(
+        phase_y=_normalize_float_mapping(layout.get("phase_y"), defaults.phase_y),
+        workstream_x=_normalize_float_mapping(layout.get("workstream_x"), defaults.workstream_x),
+        phase_colors=_normalize_string_mapping(layout.get("phase_colors"), defaults.phase_colors),
+        doc_width=_normalize_float_value(layout.get("doc_width"), defaults.doc_width, label="layout.doc_width"),
+        table_width=_normalize_float_value(layout.get("table_width"), defaults.table_width, label="layout.table_width"),
+        content_start_y=_normalize_float_value(layout.get("content_start_y"), defaults.content_start_y, label="layout.content_start_y"),
+        content_gap_y=_normalize_float_value(layout.get("content_gap_y"), defaults.content_gap_y, label="layout.content_gap_y"),
+        fragment_indent_x=_normalize_float_value(layout.get("fragment_indent_x"), defaults.fragment_indent_x, label="layout.fragment_indent_x"),
+        fragment_gap_y=_normalize_float_value(layout.get("fragment_gap_y"), defaults.fragment_gap_y, label="layout.fragment_gap_y"),
+        min_card_height=_normalize_float_value(layout.get("min_card_height"), defaults.min_card_height, label="layout.min_card_height"),
+        chars_per_line=_normalize_float_value(layout.get("chars_per_line"), defaults.chars_per_line, label="layout.chars_per_line"),
+    )
 
 
 def _normalize_source_paths(value: object, *, default: str) -> tuple[str, ...]:
@@ -103,6 +165,42 @@ def _normalize_removed_item_policy(value: object) -> str:
     if normalized in {"archive", "remove"}:
         return normalized
     raise ValueError("sync.removed_item_policy must be 'archive' or 'remove'")
+
+
+def _normalize_float_mapping(value: object, defaults: dict[str, float]) -> dict[str, float]:
+    result = dict(defaults)
+    if value is None:
+        return result
+    if not isinstance(value, dict):
+        raise ValueError("layout mappings must be TOML tables with numeric values.")
+    for key, raw in value.items():
+        if not isinstance(key, str) or not key.strip():
+            continue
+        result[key.strip()] = _normalize_float_value(raw, result.get(key.strip(), 0.0), label=f"layout.{key.strip()}")
+    return result
+
+
+def _normalize_string_mapping(value: object, defaults: dict[str, str]) -> dict[str, str]:
+    result = dict(defaults)
+    if value is None:
+        return result
+    if not isinstance(value, dict):
+        raise ValueError("layout mappings must be TOML tables with string values.")
+    for key, raw in value.items():
+        if not isinstance(key, str) or not key.strip():
+            continue
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError(f"layout.{key.strip()} must be a non-empty string")
+        result[key.strip()] = raw.strip()
+    return result
+
+
+def _normalize_float_value(value: object, default: float, *, label: str) -> float:
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    raise ValueError(f"{label} must be a number")
 
 
 def _normalize_phase_zone_strategy(value: object, *, default: str) -> str:

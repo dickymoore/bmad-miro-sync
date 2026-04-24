@@ -109,6 +109,39 @@ story_summary = "doc"            # default: "table"
 
 The legacy `layout.create_phase_frames` and `publish.stories_table` booleans still load for backward compatibility, but the exported plan, bundle, runtime results, and local state now record preferred versus resolved item types plus fallback warnings through the object-strategy contract.
 
+Direct REST publish layout is now configurable from `.bmad-miro.toml`:
+
+```toml
+[layout]
+doc_width = 680
+table_width = 840
+content_start_y = 260
+content_gap_y = 120
+fragment_indent_x = 140
+fragment_gap_y = 90
+
+[layout.phase_y]
+analysis = -1800
+planning = -600
+solutioning = 600
+implementation = 1800
+
+[layout.workstream_x]
+general = -2400
+product = -1200
+ux = 0
+architecture = 1200
+delivery = 2400
+
+[layout.phase_colors]
+analysis = "#d5f692"
+planning = "#a6ccf5"
+solutioning = "#fff9b1"
+implementation = "#ffcee0"
+```
+
+Those settings control the lane layout for `publish-direct`: phase rows, workstream columns, scaffold colors, card widths, and vertical spacing for new items. Existing mapped items still preserve their prior Miro positions on update.
+
 ## Commands
 
 Build a sync plan:
