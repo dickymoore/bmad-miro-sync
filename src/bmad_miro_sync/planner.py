@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import html
 from pathlib import Path
 import re
 
@@ -42,6 +44,10 @@ _OBJECT_FAMILY_ARTIFACT_CONTENT = "artifact_content"
 _OBJECT_FAMILY_PHASE_ZONE = "phase_zone_scaffolding"
 _OBJECT_FAMILY_STORY_SUMMARY = "story_summary"
 _OBJECT_FAMILY_WORKSTREAM = "workstream_anchor"
+_MAX_DOC_HTML_CHARS = 5800
+_OVERSIZE_DOC_FALLBACK_REASON = (
+    "Section content exceeded Miro's text-item size limit and was split into sequenced fragments."
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -101,7 +107,8 @@ def build_sync_plan(
             plan.warnings.append("Configured publish flags filtered every discovered artifact out of the board plan.")
             return plan
 
-    ordered_artifacts = _sort_artifacts(artifacts)
+    ordered_artifacts = _expand_oversized_doc_artifacts(_sort_artifacts(artifacts), config, object_strategies, plan.warnings)
+    plan.artifacts = ordered_artifacts
     used_zones = _ordered_unique([artifact.phase_zone for artifact in ordered_artifacts])
     used_workstreams = _ordered_unique((artifact.phase_zone, artifact.workstream) for artifact in ordered_artifacts)
     artifact_ranks = _artifact_ranks(ordered_artifacts)
@@ -174,6 +181,7 @@ def build_sync_plan(
     for artifact in ordered_artifacts:
         existing_item, reused_previous_identity = _resolve_existing_item(manifest, artifact)
         resolved_operation = _resolve_artifact_operation(artifact, config, object_strategies)
+        operation_strategy = _artifact_operation_strategy(resolved_operation.strategy, artifact)
         item_type = resolved_operation.item_type
         action, status = _resolve_content_action(existing_item, reused_previous_identity, artifact.sha256, item_type)
         columns = resolved_operation.columns
@@ -216,12 +224,12 @@ def build_sync_plan(
                 existing_item=reusable_existing_item,
                 layout_policy=_content_layout_policy(action, reusable_existing_item),
                 layout_snapshot=_layout_snapshot(reusable_existing_item) if action in _PRESERVE_LAYOUT_ACTIONS else None,
-                object_family=resolved_operation.strategy.object_family,
-                preferred_item_type=resolved_operation.strategy.preferred_item_type,
-                resolved_item_type=resolved_operation.strategy.resolved_item_type,
-                degraded=resolved_operation.strategy.degraded,
-                fallback_reason=resolved_operation.strategy.fallback_reason,
-                degraded_warning=resolved_operation.strategy.degraded_warning,
+                object_family=operation_strategy.object_family,
+                preferred_item_type=operation_strategy.preferred_item_type,
+                resolved_item_type=operation_strategy.resolved_item_type,
+                degraded=operation_strategy.degraded,
+                fallback_reason=operation_strategy.fallback_reason,
+                degraded_warning=operation_strategy.degraded_warning,
                 status=status,
                 lifecycle_state="active",
                 heading_level=artifact.heading_level,
@@ -294,6 +302,33 @@ def _sort_artifacts(artifacts: list[ArtifactRecord]) -> list[ArtifactRecord]:
             workstream_rank(artifact.workstream),
         ),
     )
+
+
+def _expand_oversized_doc_artifacts(
+    artifacts: list[ArtifactRecord],
+    config: SyncConfig,
+    object_strategies: dict[str, ObjectStrategyDecision],
+    warnings: list[str],
+) -> list[ArtifactRecord]:
+    expanded: list[ArtifactRecord] = []
+
+    for artifact in artifacts:
+        resolved_operation = _resolve_artifact_operation(artifact, config, object_strategies)
+        if resolved_operation.item_type != "doc":
+            expanded.append(artifact)
+            continue
+        rendered_html_length = len(_markdown_to_simple_html(artifact.content))
+        if rendered_html_length <= _MAX_DOC_HTML_CHARS:
+            expanded.append(artifact)
+            continue
+        fragments = _split_oversized_doc_artifact(artifact)
+        expanded.extend(fragments)
+        warnings.append(
+            f'Section "{artifact.title}" exceeded Miro text content limits ({rendered_html_length} rendered HTML chars) '
+            f"and was split into {len(fragments)} sequenced fragments."
+        )
+
+    return expanded
 
 
 def _ordered_unique(values: list[str] | list[tuple[str, str]]) -> list[str] | list[tuple[str, str]]:
@@ -531,6 +566,171 @@ def _resolve_object_strategies(config: SyncConfig) -> dict[str, ObjectStrategyDe
     return strategies
 
 
+def _split_oversized_doc_artifact(artifact: ArtifactRecord) -> list[ArtifactRecord]:
+    heading_prefix = "#" * max(int(artifact.heading_level or 0), 1)
+    body = _content_body_without_heading(artifact.content)
+    parts = _split_markdown_body_to_fit(body, artifact.title, heading_prefix)
+    source_digest = hashlib.sha256(artifact.content.encode("utf-8")).hexdigest()[:12]
+    fragments: list[ArtifactRecord] = []
+    total_parts = len(parts)
+
+    for index, part_body in enumerate(parts, start=1):
+        part_title = f"{artifact.title} ({index}/{total_parts})"
+        part_slug = f"{artifact.section_slug or 'section'}-part-{index}"
+        content = _fragment_markdown_content(heading_prefix, part_title, part_body)
+        fragments.append(
+            ArtifactRecord(
+                artifact_id=f"{artifact.artifact_id}::part-{index}",
+                source_artifact_id=artifact.source_artifact_id,
+                kind=artifact.kind,
+                title=part_title,
+                phase=artifact.phase,
+                phase_zone=artifact.phase_zone,
+                workstream=artifact.workstream,
+                collaboration_intent=artifact.collaboration_intent,
+                relative_path=artifact.relative_path,
+                content=content,
+                sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                source_type=artifact.source_type,
+                heading_level=artifact.heading_level,
+                parent_artifact_id=artifact.parent_artifact_id,
+                section_path=tuple(artifact.section_path) + (part_slug,),
+                section_title_path=tuple(artifact.section_title_path) + (part_title,),
+                section_slug=part_slug,
+                section_sibling_index=index,
+                lineage_key=f"{artifact.lineage_key or artifact.artifact_id}::split::{source_digest}::{index}",
+                lineage_status="split",
+                previous_artifact_id=None,
+                previous_parent_artifact_id=artifact.previous_parent_artifact_id,
+            )
+        )
+
+    return fragments
+
+
+def _content_body_without_heading(content: str) -> str:
+    lines = content.splitlines()
+    started = False
+    for index, line in enumerate(lines):
+        if not started and not line.strip():
+            continue
+        started = True
+        if line.lstrip().startswith("#"):
+            return "\n".join(lines[index + 1 :]).strip()
+        break
+    return content.strip()
+
+
+def _fragment_markdown_content(heading_prefix: str, title: str, body: str) -> str:
+    heading_line = f"{heading_prefix} {title}".strip()
+    body = body.strip()
+    if not body:
+        return heading_line + "\n"
+    return f"{heading_line}\n\n{body}\n"
+
+
+def _split_markdown_body_to_fit(body: str, title: str, heading_prefix: str) -> list[str]:
+    remaining = body.strip()
+    if not remaining:
+        return [""]
+
+    chunks: list[str] = []
+    while remaining:
+        candidate = _fragment_markdown_content(heading_prefix, title, remaining)
+        if len(_markdown_to_simple_html(candidate)) <= _MAX_DOC_HTML_CHARS:
+            chunks.append(remaining.strip())
+            break
+
+        split_at = _largest_fitting_prefix_index(remaining, title=title, heading_prefix=heading_prefix)
+        chunk = remaining[:split_at].rstrip()
+        if not chunk:
+            chunk = remaining[: max(1, min(len(remaining), 512))].rstrip()
+            split_at = len(chunk)
+        chunks.append(chunk)
+        remaining = remaining[split_at:].lstrip()
+
+    return chunks
+
+
+def _largest_fitting_prefix_index(content: str, *, title: str, heading_prefix: str) -> int:
+    current = ""
+    current_end = 0
+    for block, end_index in _split_candidates(content):
+        proposal = f"{current}\n\n{block}".strip() if current else block
+        if len(_markdown_to_simple_html(_fragment_markdown_content(heading_prefix, title, proposal))) <= _MAX_DOC_HTML_CHARS:
+            current = proposal
+            current_end = end_index
+            continue
+        if current:
+            return current_end
+        return _largest_fitting_line_prefix_index(block, content, end_index, title=title, heading_prefix=heading_prefix)
+    return len(content)
+
+
+def _largest_fitting_line_prefix_index(
+    block: str,
+    source_content: str,
+    block_end_index: int,
+    *,
+    title: str,
+    heading_prefix: str,
+) -> int:
+    current = ""
+    consumed = 0
+    for line in block.splitlines(keepends=True):
+        proposal = current + line
+        if len(_markdown_to_simple_html(_fragment_markdown_content(heading_prefix, title, proposal))) <= _MAX_DOC_HTML_CHARS:
+            current = proposal
+            consumed += len(line)
+            continue
+        if current:
+            return block_end_index - len(block) + consumed
+        return _largest_fitting_word_prefix_index(
+            line,
+            source_content,
+            block_end_index - len(block),
+            title=title,
+            heading_prefix=heading_prefix,
+        )
+    return block_end_index
+
+
+def _largest_fitting_word_prefix_index(
+    line: str,
+    source_content: str,
+    block_start_index: int,
+    *,
+    title: str,
+    heading_prefix: str,
+) -> int:
+    current = ""
+    consumed = 0
+    for match in re.finditer(r"\S+\s*", line):
+        token = match.group(0)
+        proposal = current + token
+        if len(_markdown_to_simple_html(_fragment_markdown_content(heading_prefix, title, proposal))) <= _MAX_DOC_HTML_CHARS:
+            current = proposal
+            consumed = match.end()
+            continue
+        if current:
+            return block_start_index + consumed
+    return block_start_index + max(1, min(len(line), 512))
+
+
+def _split_candidates(content: str) -> list[tuple[str, int]]:
+    parts: list[tuple[str, int]] = []
+    last_index = 0
+    for match in re.finditer(r"(?:\n\s*\n)+", content):
+        chunk = content[last_index:match.start()].strip()
+        if chunk:
+            parts.append((chunk, match.start()))
+        last_index = match.end()
+    tail = content[last_index:].strip()
+    if tail:
+        parts.append((tail, len(content)))
+    return parts
+
+
 def _plan_object_strategy_warnings(
     operations: list[PublishOperation],
     object_strategies: dict[str, ObjectStrategyDecision],
@@ -563,6 +763,22 @@ def _default_item_strategy(item_type: str) -> ObjectStrategyDecision:
         object_family=_OBJECT_FAMILY_ARTIFACT_CONTENT,
         preferred_item_type=item_type,
         resolved_item_type=item_type,
+    )
+
+
+def _artifact_operation_strategy(
+    base_strategy: ObjectStrategyDecision,
+    artifact: ArtifactRecord,
+) -> ObjectStrategyDecision:
+    if artifact.lineage_status != "split":
+        return base_strategy
+    return ObjectStrategyDecision(
+        object_family=base_strategy.object_family,
+        preferred_item_type=base_strategy.preferred_item_type,
+        resolved_item_type=base_strategy.resolved_item_type,
+        degraded=True,
+        fallback_reason=_OVERSIZE_DOC_FALLBACK_REASON,
+        degraded_warning=_OVERSIZE_DOC_FALLBACK_REASON,
     )
 
 
@@ -719,6 +935,53 @@ def _extract_bullet_rows(content: str) -> list[str]:
             continue
         rows.append(match.group("item"))
     return rows
+
+
+def _markdown_to_simple_html(content: str) -> str:
+    paragraphs: list[str] = []
+    buffer: list[str] = []
+    in_code = False
+
+    def flush() -> None:
+        nonlocal buffer
+        if buffer:
+            paragraphs.append("<p>" + "<br/>".join(buffer) + "</p>")
+            buffer = []
+
+    for raw_line in content.splitlines():
+        line = raw_line.rstrip()
+        if line.strip().startswith("```"):
+            if in_code:
+                paragraphs.append("<pre>" + "\n".join(buffer) + "</pre>")
+                buffer = []
+                in_code = False
+            else:
+                flush()
+                in_code = True
+            continue
+        escaped = html.escape(line)
+        if in_code:
+            buffer.append(escaped)
+            continue
+        if not line.strip():
+            flush()
+            continue
+        if line.lstrip().startswith("#"):
+            flush()
+            heading = escaped.lstrip("#").strip() or escaped
+            paragraphs.append(f"<p><strong>{heading}</strong></p>")
+            continue
+        if line.lstrip().startswith(("- ", "* ")):
+            buffer.append("&bull; " + escaped[2:])
+            continue
+        buffer.append(escaped)
+
+    if in_code:
+        paragraphs.append("<pre>" + "\n".join(buffer) + "</pre>")
+    else:
+        flush()
+
+    return "".join(paragraphs) or "<p></p>"
 
 
 def _zone_phase(phase_zone: str) -> str:

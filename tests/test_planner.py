@@ -8,7 +8,7 @@ import unittest
 from bmad_miro_sync.config import load_config
 from bmad_miro_sync.host_exports import write_json
 from bmad_miro_sync.manifest import SyncManifest, apply_results, load_manifest, save_manifest
-from bmad_miro_sync.planner import build_sync_plan
+from bmad_miro_sync.planner import _markdown_to_simple_html, build_sync_plan
 
 
 CONFIG_TEXT = """
@@ -1117,6 +1117,58 @@ phase_zone = "workstream_anchor"
                 plan.warnings,
             )
             self.assertFalse(any(operation.action == "ensure_zone" for operation in plan.operations))
+
+    def test_oversized_doc_sections_are_split_into_publishable_fragments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            config_path = root / ".bmad-miro.toml"
+            doc_path = root / "_bmad-output/planning-artifacts/prd.md"
+            config_path.write_text(CONFIG_TEXT, encoding="utf-8")
+            large_body = "\n\n".join(
+                f"Paragraph {index}: " + ("This section carries detailed planning context. " * 40)
+                for index in range(1, 18)
+            )
+            doc_path.write_text(f"# PRD\n\n## First Principles Thinking\n\n{large_body}\n", encoding="utf-8")
+
+            config = load_config(config_path)
+            plan = build_sync_plan(root, config_path, config)
+
+            split_artifacts = [
+                artifact
+                for artifact in plan.artifacts
+                if artifact.source_artifact_id.endswith("prd.md") and "::part-" in artifact.artifact_id
+            ]
+            split_operations = [
+                operation
+                for operation in plan.operations
+                if operation.source_artifact_id.endswith("prd.md") and "::part-" in operation.artifact_id
+            ]
+
+            self.assertGreaterEqual(len(split_artifacts), 2)
+            self.assertEqual(len(split_artifacts), len(split_operations))
+            self.assertTrue(all(artifact.lineage_status == "split" for artifact in split_artifacts))
+            self.assertTrue(all(operation.degraded for operation in split_operations))
+            self.assertTrue(
+                all(
+                    operation.fallback_reason == "Section content exceeded Miro's text-item size limit and was split into sequenced fragments."
+                    for operation in split_operations
+                )
+            )
+            self.assertTrue(any("First Principles Thinking" in warning for warning in plan.warnings))
+            self.assertFalse(
+                any(
+                    operation.artifact_id == "_bmad-output/planning-artifacts/prd.md#prd/first-principles-thinking"
+                    for operation in plan.operations
+                )
+            )
+            self.assertTrue(
+                all(len(_markdown_to_simple_html(artifact.content)) <= 5800 for artifact in split_artifacts)
+            )
+            self.assertEqual(
+                [artifact.section_sibling_index for artifact in split_artifacts],
+                list(range(1, len(split_artifacts) + 1)),
+            )
 
 
 if __name__ == "__main__":
