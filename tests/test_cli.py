@@ -928,6 +928,74 @@ planning = "#123456"
             self.assertEqual(bulk_payload[1]["position"]["y"], 70.0)
             self.assertEqual(bulk_payload[1]["geometry"]["width"], 720.0)
 
+    def test_publish_direct_sanitizes_raw_html_and_css_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath, MIRO_API_TOKEN="test-token")
+            runtime_dir = root / ".bmad-miro-sync/run"
+            runtime_dir.mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            plan = _sample_publish_plan(root)
+            plan["operations"][1]["content"] = (
+                "# PRD\n\n"
+                "<!DOCTYPE html>\n"
+                "<html>\n"
+                "<style>\n"
+                ".com-sec-card-1__icon--pink path{fill:#ed6f78}.com-sec-card-1__icon--pink-light circle{fill:#ffbfbf}\n"
+                "</style>\n"
+                "<body>\n"
+                "Visible summary text.\n"
+                "```html\n"
+                "<div class=\"waf\">blocked</div>\n"
+                "</html>\n"
+                "```\n"
+            )
+            plan_path = runtime_dir / "plan.json"
+            plan_path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+
+            server = _MiroApiTestServer(("127.0.0.1", 0))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "bmad_miro_sync",
+                        "publish-direct",
+                        "--project-root",
+                        str(root),
+                        "--config",
+                        str(root / ".bmad-miro.toml"),
+                        "--plan",
+                        str(plan_path),
+                        "--results",
+                        ".bmad-miro-sync/run/results.json",
+                        "--api-base-url",
+                        f"http://127.0.0.1:{server.server_port}",
+                    ],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            bulk_payload = server.calls[0]["body"]
+            content = bulk_payload[1]["data"]["content"]
+            self.assertIn("Visible summary text.", content)
+            self.assertIn("Raw HTML/CSS payload omitted from Miro sync", content)
+            self.assertIn("Code-heavy block omitted from Miro sync", content)
+            self.assertNotIn("<!DOCTYPE html>", content)
+            self.assertNotIn(".com-sec-card-1__icon--pink", content)
+            self.assertNotIn("<div class=", content)
+
     def test_publish_direct_keeps_failed_results_without_applying_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

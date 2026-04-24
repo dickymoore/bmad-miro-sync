@@ -20,6 +20,8 @@ DEFAULT_RESULTS_PATH = ".bmad-miro-sync/run/results.json"
 _BULK_CREATE_LIMIT = 20
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 5
+_CODE_BLOCK_SUMMARY = "[Code-heavy block omitted from Miro sync; see the source artifact for full details.]"
+_HTML_PAYLOAD_SUMMARY = "[Raw HTML/CSS payload omitted from Miro sync; see the source artifact for full details.]"
 _HOST_ITEM_TYPES = {
     "doc": "text",
     "table": "text",
@@ -783,7 +785,8 @@ def _shape_content_html(operation: dict[str, Any]) -> str:
 def _operation_content_html(operation: dict[str, Any]) -> str:
     if operation.get("item_type") == "table":
         return _table_operation_html(operation)
-    return _markdown_to_simple_html(str(operation.get("content") or ""))
+    sanitized = _sanitize_markdown_for_miro(str(operation.get("content") or ""))
+    return _markdown_to_simple_html(sanitized)
 
 
 def _table_operation_html(operation: dict[str, Any]) -> str:
@@ -846,6 +849,143 @@ def _markdown_to_simple_html(content: str) -> str:
         flush()
 
     return "".join(paragraphs) or "<p></p>"
+
+
+def _sanitize_markdown_for_miro(content: str) -> str:
+    sanitized_lines: list[str] = []
+    removed_web_payload = False
+    in_code = False
+    in_raw_html_block = False
+    raw_html_block_tag = ""
+    fence_marker = "```"
+    code_lang = ""
+    code_buffer: list[str] = []
+
+    def flush_removed_payload_note() -> None:
+        nonlocal removed_web_payload
+        if removed_web_payload and (not sanitized_lines or sanitized_lines[-1] != _HTML_PAYLOAD_SUMMARY):
+            sanitized_lines.append(_HTML_PAYLOAD_SUMMARY)
+        removed_web_payload = False
+
+    def flush_code_block() -> None:
+        nonlocal code_buffer
+        nonlocal code_lang
+        block_text = "\n".join(code_buffer)
+        if _should_summarize_code_block(block_text, code_lang):
+            flush_removed_payload_note()
+            if not sanitized_lines or sanitized_lines[-1] != _CODE_BLOCK_SUMMARY:
+                sanitized_lines.append(_CODE_BLOCK_SUMMARY)
+        else:
+            flush_removed_payload_note()
+            sanitized_lines.append(f"{fence_marker}{code_lang}".rstrip())
+            sanitized_lines.extend(code_buffer)
+            sanitized_lines.append(fence_marker)
+        code_buffer = []
+        code_lang = ""
+
+    for raw_line in content.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith(("```", "~~~")):
+            marker = "```" if stripped.startswith("```") else "~~~"
+            if in_code and marker == fence_marker:
+                flush_code_block()
+                in_code = False
+                continue
+            flush_removed_payload_note()
+            in_code = True
+            fence_marker = marker
+            code_lang = stripped[len(marker) :].strip().lower()
+            code_buffer = []
+            continue
+        if in_code:
+            code_buffer.append(raw_line)
+            continue
+        if in_raw_html_block:
+            removed_web_payload = True
+            if _closes_raw_html_block(stripped, raw_html_block_tag):
+                in_raw_html_block = False
+                raw_html_block_tag = ""
+            continue
+        block_tag = _opens_raw_html_block(stripped)
+        if block_tag:
+            removed_web_payload = True
+            if not _closes_raw_html_block(stripped, block_tag):
+                in_raw_html_block = True
+                raw_html_block_tag = block_tag
+            continue
+        if _is_raw_html_payload_line(raw_line):
+            removed_web_payload = True
+            continue
+        flush_removed_payload_note()
+        sanitized_lines.append(raw_line)
+
+    if in_code:
+        flush_code_block()
+    flush_removed_payload_note()
+    sanitized = "\n".join(sanitized_lines).strip()
+    return sanitized or _HTML_PAYLOAD_SUMMARY
+
+
+def _should_summarize_code_block(block_text: str, language: str) -> bool:
+    normalized_language = language.lower()
+    if normalized_language in {"html", "xml", "svg", "css", "scss", "less"}:
+        return True
+    if len(block_text) > 1600 or len(block_text.splitlines()) > 40:
+        return True
+    return _looks_like_web_payload(block_text)
+
+
+def _is_raw_html_payload_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    lower = stripped.lower()
+    if lower.startswith(("<!doctype", "<html", "</html", "<head", "</head", "<body", "</body", "<style", "</style", "<script", "</script")):
+        return True
+    if lower.startswith("<?xml"):
+        return True
+    if lower.startswith("<") and re.match(r"^</?[a-z][a-z0-9:_-]*(\s|>|/)", lower):
+        return True
+    if _looks_like_css_payload(stripped):
+        return True
+    return False
+
+
+def _opens_raw_html_block(line: str) -> str:
+    lower = line.lower()
+    for tag in ("style", "script", "svg"):
+        if lower.startswith(f"<{tag}") and not lower.startswith(f"</{tag}"):
+            return tag
+    return ""
+
+
+def _closes_raw_html_block(line: str, tag: str) -> bool:
+    lower = line.lower()
+    return f"</{tag}" in lower
+
+
+def _looks_like_web_payload(text: str) -> bool:
+    sample = text.strip()
+    if not sample:
+        return False
+    if "<html" in sample.lower() or "<style" in sample.lower() or "<script" in sample.lower():
+        return True
+    if sample.count("{") >= 3 and sample.count("}") >= 3 and sample.count(";") >= 3:
+        return True
+    if sample.count("<") >= 5 and sample.count(">") >= 5:
+        return True
+    return False
+
+
+def _looks_like_css_payload(line: str) -> bool:
+    if len(line) < 40:
+        return False
+    return (
+        line.count("{") >= 1
+        and line.count("}") >= 1
+        and line.count(":") >= 2
+        and line.count(";") >= 2
+    )
 
 
 def _item_url(board_url: str, item_id: str) -> str:
