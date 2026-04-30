@@ -42,6 +42,15 @@ from .readiness import (
     render_handoff_output,
     render_readiness_summary,
 )
+from .source_status import (
+    CHANGED_SOURCE_STATUSES,
+    DEFAULT_SOURCE_STATUS_PATH,
+    build_source_status_ledger,
+    filter_plan_to_sources,
+    load_source_status,
+    save_source_status,
+    select_source_ids,
+)
 from .workflow import (
     DEFAULT_COLLABORATION_REPORT_PATH,
     DEFAULT_RUNTIME_DIR,
@@ -60,6 +69,17 @@ def main() -> int:
     plan_parser = subparsers.add_parser("plan", help="Build a sync plan from BMad outputs.")
     _add_common_args(plan_parser)
     plan_parser.add_argument("--output", help="Write the plan JSON to this path.")
+
+    source_status_parser = subparsers.add_parser(
+        "source-status",
+        help="Summarize source-level BMAD publish status derived from the current plan and manifest.",
+    )
+    _add_common_args(source_status_parser)
+    source_status_parser.add_argument(
+        "--output",
+        default=DEFAULT_SOURCE_STATUS_PATH,
+        help="Repo-local JSON path to write the source-status ledger.",
+    )
 
     prompt_parser = subparsers.add_parser("render-host-instructions", help="Render host instructions for a plan.")
     _add_common_args(prompt_parser)
@@ -100,6 +120,23 @@ def main() -> int:
         action="store_true",
         help="Apply results back into the repo-local manifest, but only when publish completes cleanly.",
     )
+    source_selection_group = publish_direct_parser.add_mutually_exclusive_group()
+    source_selection_group.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="Publish only the specified source_artifact_id. Repeat to select multiple sources.",
+    )
+    source_selection_group.add_argument(
+        "--changed-only",
+        action="store_true",
+        help=f"Publish only sources whose status is one of: {', '.join(CHANGED_SOURCE_STATUSES)}.",
+    )
+    source_selection_group.add_argument(
+        "--source-status",
+        choices=("not_published", "partially_published", "published", "out_of_date", "failed"),
+        help="Publish only sources currently in the specified source-ledger status.",
+    )
 
     install_parser = subparsers.add_parser("install", help="Install bmad-miro-sync into a target project.")
     install_parser.add_argument("--project-root", default=".", help="Target project root.")
@@ -112,7 +149,7 @@ def main() -> int:
     install_parser.add_argument(
         "--no-patch-bmad-skills",
         action="store_true",
-        help="Do not patch existing BMad skill headers with the sync policy.",
+        help="Do not write BMAD workflow customization overrides under _bmad/custom/.",
     )
     install_parser.add_argument(
         "--setup-rest-auth",
@@ -249,6 +286,26 @@ def main() -> int:
             sys.stdout.write("\n")
         return 0
 
+    if args.command == "source-status":
+        project_root = Path(args.project_root).resolve()
+        try:
+            config_path, config = _load_cli_config(project_root, args.config)
+            output_path = _resolve_repo_local_path(project_root, args.output, "--output")
+            plan = build_sync_plan(project_root, config_path, config)
+            manifest = load_manifest(project_root, config.manifest_path)
+            previous_ledger = load_source_status(
+                project_root,
+                path=_display_path(output_path, project_root),
+            )
+            ledger = build_source_status_ledger(plan, manifest, previous_ledger=previous_ledger)
+            save_source_status(project_root, ledger, path=_display_path(output_path, project_root))
+        except ValueError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 1
+        json.dump(ledger.to_dict(), sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 0
+
     if args.command == "render-host-instructions":
         project_root = Path(args.project_root).resolve()
         try:
@@ -312,6 +369,7 @@ def main() -> int:
             plan_path = _resolve_repo_local_path(project_root, args.plan, "--plan")
             results_path = _resolve_repo_local_path(project_root, args.results, "--results")
             token = load_miro_token_for_project(project_root, args.token_env)
+            source_status_path = _resolve_repo_local_path(project_root, DEFAULT_SOURCE_STATUS_PATH, "source-status ledger")
         except (MiroApiError, ValueError) as exc:
             sys.stderr.write(f"{exc}\n")
             return 1
@@ -328,9 +386,30 @@ def main() -> int:
         else:
             plan = build_sync_plan(project_root, config_path, config).to_dict()
 
+        manifest = load_manifest(project_root, config.manifest_path)
+        previous_ledger = load_source_status(
+            project_root,
+            path=_display_path(source_status_path, project_root),
+        )
+        current_ledger = build_source_status_ledger(plan, manifest, previous_ledger=previous_ledger)
+        execution_plan = plan
+        if args.source:
+            unknown_sources = sorted(set(args.source) - set(current_ledger.sources))
+            if unknown_sources:
+                sys.stderr.write(f"Unknown source_artifact_id values: {', '.join(unknown_sources)}\n")
+                return 1
+            execution_plan = filter_plan_to_sources(plan, args.source)
+        elif args.changed_only or args.source_status:
+            selected_sources = select_source_ids(
+                current_ledger,
+                changed_only=args.changed_only,
+                source_status=args.source_status,
+            )
+            execution_plan = filter_plan_to_sources(plan, selected_sources)
+
         try:
             results = execute_publish_plan(
-                plan,
+                execution_plan,
                 token=token,
                 layout=config.layout,
                 api_base_url=args.api_base_url,
@@ -338,9 +417,12 @@ def main() -> int:
         except MiroApiError as exc:
             sys.stderr.write(f"{exc}\n")
             return 1
+        if execution_plan is not plan:
+            results["selection"] = execution_plan.get("selection", {})
 
         write_json(results_path, results)
 
+        manifest_for_ledger = manifest
         if args.apply_results:
             if results.get("run_status") != "complete":
                 sys.stderr.write(
@@ -350,7 +432,6 @@ def main() -> int:
                 json.dump(results, sys.stdout, indent=2, sort_keys=True)
                 sys.stdout.write("\n")
                 return 1
-            manifest = load_manifest(project_root, config.manifest_path)
             updated = apply_results(
                 manifest,
                 results,
@@ -359,6 +440,19 @@ def main() -> int:
                 results_path=_display_path(results_path, project_root),
             )
             save_manifest(project_root, config.manifest_path, updated)
+            manifest_for_ledger = updated
+
+        updated_ledger = build_source_status_ledger(
+            plan,
+            manifest_for_ledger,
+            results=results,
+            previous_ledger=previous_ledger,
+        )
+        save_source_status(
+            project_root,
+            updated_ledger,
+            path=_display_path(source_status_path, project_root),
+        )
 
         json.dump(results, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
@@ -391,6 +485,7 @@ def main() -> int:
             "project_root": str(result.project_root),
             "written_files": [str(path) for path in result.written_files],
             "backup_files": [str(path) for path in result.backup_files],
+            "bmad_customizations": [str(path) for path in result.bmad_customizations],
             "patched_skills": [str(path) for path in result.patched_skills],
             "skipped_skills": [str(path) for path in result.skipped_skills],
             "auth": auth_result,

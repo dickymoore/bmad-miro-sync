@@ -12,7 +12,7 @@ Planning artifacts live in `_bmad-output/planning-artifacts/`.
 
 ## Installation
 
-The intended setup path is the installer command. It writes the local repo config, adds the project-local sync skill, creates a short usage doc, and patches BMad skills by default so artifact-producing workflows invoke the sync path automatically.
+The intended setup path is the installer command. It writes the local repo config, adds the project-local sync skills, creates a short usage doc, and, when upstream BMAD is present, writes BMAD-native customization overrides under `_bmad/custom/` so artifact-producing workflows invoke the sync path automatically.
 
 Install into a target repo:
 
@@ -22,7 +22,7 @@ PYTHONPATH=src python3 -m bmad_miro_sync install \
   --board-url https://miro.com/app/board/your-board-id=/
 ```
 
-By default, this command patches existing BMad skill headers with the sync policy. To opt out:
+By default, this command writes BMAD workflow overrides under `_bmad/custom/`. To opt out:
 
 ```bash
 PYTHONPATH=src python3 -m bmad_miro_sync install \
@@ -38,10 +38,11 @@ The installer creates:
 - `.agents/skills/bmad-miro-sync/SKILL.md`
 - `.agents/skills/bmad-miro-ingest/SKILL.md`
 - `.agents/skills/bmad-miro-collaboration/SKILL.md`
+- `_bmad/custom/*.toml` workflow overrides when BMAD is installed
 - `docs/miro-sync.md`
 - `.gitignore` entries for `.bmad-miro-sync/` and `.bmad-miro-auth.json`
 
-And, by default, it patches repo-local `bmad-*` skill headers with the sync policy.
+The BMAD-native overrides are update-safe compared with patching generated skill markdown directly. `bmad-miro-sync` remains the execution engine; BMAD customization is only the integration layer.
 
 ## MVP Status
 
@@ -113,12 +114,20 @@ Direct REST publish layout is now configurable from `.bmad-miro.toml`:
 
 ```toml
 [layout]
-doc_width = 680
-table_width = 840
-content_start_y = 260
-content_gap_y = 120
-fragment_indent_x = 140
-fragment_gap_y = 90
+doc_width = 620
+table_width = 760
+content_start_y = 220
+content_gap_y = 96
+source_gap_y = 88
+source_header_width = 760
+source_header_height = 132
+source_content_indent_x = 84
+fragment_indent_x = 150
+fragment_gap_y = 72
+zone_width = 6400
+zone_height = 180
+workstream_header_width = 880
+workstream_header_height = 120
 
 [layout.phase_y]
 analysis = -1800
@@ -134,13 +143,54 @@ architecture = 1200
 delivery = 2400
 
 [layout.phase_colors]
-analysis = "#d5f692"
-planning = "#a6ccf5"
-solutioning = "#fff9b1"
-implementation = "#ffcee0"
+analysis = "#d8f0dc"
+planning = "#dbe7ff"
+solutioning = "#fff0c9"
+implementation = "#f8d9dc"
+
+[layout.workstream_colors]
+general = "#6b7280"
+product = "#2563eb"
+ux = "#d97706"
+architecture = "#059669"
+delivery = "#7c3aed"
 ```
 
-Those settings control the lane layout for `publish-direct`: phase rows, workstream columns, scaffold colors, card widths, and vertical spacing for new items. Existing mapped items still preserve their prior Miro positions on update.
+Those settings control the presentation layout for `publish-direct`: phase banners, workstream headers, source header cards, grouped content placement, scaffold colors, and spacing for new items. Existing mapped items still preserve their prior Miro positions on update.
+
+## Browser Feedback Loop
+
+For visual review and rapid iteration, use Playwright MCP rather than Puppeteer MCP.
+
+Recommended setup for this repo:
+
+```toml
+[mcp_servers.playwright]
+command = "npx"
+args = [
+  "@playwright/mcp@latest",
+  "--cdp-endpoint",
+  "http://127.0.0.1:9222",
+  "--ignore-https-errors",
+]
+```
+
+Launch the visible automation browser from WSL:
+
+```bash
+./scripts/linux/start-playwright-visible-browser.sh
+```
+
+Then restart Codex. Once Playwright MCP is available in-session, the preferred review loop is:
+
+1. publish to Miro
+2. refresh the board in the browser
+3. inspect the visual layout
+4. adjust renderer or layout config
+5. republish and compare
+
+The full future-proof runbook is documented in [docs/browser-automation-runbook.md](/home/codexuser/bmad-miro-sync/docs/browser-automation-runbook.md).
+Implementation lessons learned are documented in [_bmad-output/planning-artifacts/browser-automation-lessons-learned-2026-04-30.md](/home/codexuser/bmad-miro-sync/_bmad-output/planning-artifacts/browser-automation-lessons-learned-2026-04-30.md).
 
 ## Commands
 

@@ -23,11 +23,14 @@ _MAX_RETRIES = 5
 _CODE_BLOCK_SUMMARY = "[Code-heavy block omitted from Miro sync; see the source artifact for full details.]"
 _HTML_PAYLOAD_SUMMARY = "[Raw HTML/CSS payload omitted from Miro sync; see the source artifact for full details.]"
 _HOST_ITEM_TYPES = {
-    "doc": "text",
+    "doc": "shape",
     "table": "text",
     "zone": "shape",
     "workstream_anchor": "shape",
+    "source_frame": "frame",
 }
+
+
 class MiroApiError(RuntimeError):
     pass
 
@@ -87,6 +90,7 @@ def execute_publish_plan(
         resolved_layout,
     )
     create_ops: list[dict[str, Any]] = []
+    item_id_by_artifact = _existing_item_ids_by_artifact(operations)
 
     def flush_create_ops() -> tuple[bool, str | None]:
         nonlocal create_ops
@@ -100,16 +104,54 @@ def execute_publish_plan(
             operations=create_ops,
             artifact_index=artifact_index,
             layout=resolved_layout,
+            item_id_by_artifact=item_id_by_artifact,
         )
         if created_items:
             executed_items.extend(created_items)
             if ok:
                 successful_count += len(created_items)
+                _record_item_ids(item_id_by_artifact, created_items)
         create_ops = []
         return ok, error_message
 
     for operation in operations:
         action = operation.get("action")
+        item_type = operation.get("item_type")
+        if item_type == "source_frame":
+            ok, error_message = flush_create_ops()
+            if not ok and stop_on_error:
+                return _build_run_results(
+                    plan,
+                    items=executed_items,
+                    warnings=warnings,
+                    run_status="partial" if successful_count else "failed",
+                    error_message=error_message,
+                )
+            try:
+                result_entry = _execute_single_operation(
+                    client,
+                    board_id=board_id,
+                    board_url=board_url,
+                    operation=operation,
+                    artifact=artifact_index.get(operation.get("artifact_id")),
+                    layout=resolved_layout,
+                    item_id_by_artifact=item_id_by_artifact,
+                )
+            except MiroApiError as exc:
+                executed_items.append(_failed_result_entry(plan, operation, artifact_index.get(operation.get("artifact_id")), str(exc)))
+                if stop_on_error:
+                    return _build_run_results(
+                        plan,
+                        items=executed_items,
+                        warnings=warnings,
+                        run_status="partial" if successful_count else "failed",
+                        error_message=str(exc),
+                    )
+            else:
+                executed_items.append(result_entry)
+                successful_count += 1
+                _record_item_ids(item_id_by_artifact, [result_entry])
+            continue
         if isinstance(action, str) and action.startswith(("create_", "ensure_")):
             create_ops.append(operation)
             if len(create_ops) >= _BULK_CREATE_LIMIT:
@@ -142,6 +184,7 @@ def execute_publish_plan(
                 operation=operation,
                 artifact=artifact_index.get(operation.get("artifact_id")),
                 layout=resolved_layout,
+                item_id_by_artifact=item_id_by_artifact,
             )
         except MiroApiError as exc:
             executed_items.append(_failed_result_entry(plan, operation, artifact_index.get(operation.get("artifact_id")), str(exc)))
@@ -156,6 +199,7 @@ def execute_publish_plan(
         else:
             executed_items.append(result_entry)
             successful_count += 1
+            _record_item_ids(item_id_by_artifact, [result_entry])
 
     ok, error_message = flush_create_ops()
     if not ok and stop_on_error:
@@ -204,6 +248,18 @@ class MiroApiClient:
         if isinstance(response, dict):
             return response
         raise MiroApiError("Unexpected Miro shape-update response shape.")
+
+    def create_frame(self, board_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        response = self._request_json("POST", f"/v2/boards/{board_id}/frames", payload)
+        if isinstance(response, dict):
+            return response
+        raise MiroApiError("Unexpected Miro frame-create response shape.")
+
+    def update_frame(self, board_id: str, item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        response = self._request_json("PATCH", f"/v2/boards/{board_id}/frames/{item_id}", payload)
+        if isinstance(response, dict):
+            return response
+        raise MiroApiError("Unexpected Miro frame-update response shape.")
 
     def delete_item(self, board_id: str, item_id: str) -> None:
         self._request_json("DELETE", f"/v2/boards/{board_id}/items/{item_id}", None)
@@ -254,8 +310,17 @@ def _execute_create_batch(
     operations: list[dict[str, Any]],
     artifact_index: dict[str, dict[str, Any]],
     layout: LayoutConfig,
+    item_id_by_artifact: dict[str, str],
 ) -> tuple[bool, str | None, list[dict[str, Any]]]:
-    payload = [_create_payload_for_operation(operation, layout=layout, index=index) for index, operation in enumerate(operations)]
+    payload = [
+        _create_payload_for_operation(
+            operation,
+            layout=layout,
+            index=index,
+            item_id_by_artifact=item_id_by_artifact,
+        )
+        for index, operation in enumerate(operations)
+    ]
     try:
         response_items = client.bulk_create_items(board_id, payload)
     except MiroApiError as exc:
@@ -291,6 +356,7 @@ def _execute_single_operation(
     operation: dict[str, Any],
     artifact: dict[str, Any] | None,
     layout: LayoutConfig,
+    item_id_by_artifact: dict[str, str],
 ) -> dict[str, Any]:
     action = _require_str(operation.get("action"), "operation.action")
     existing_item = operation.get("existing_item") if isinstance(operation.get("existing_item"), dict) else {}
@@ -301,11 +367,13 @@ def _execute_single_operation(
 
     if action.startswith("update_"):
         item_id = _require_str(existing_item.get("item_id"), f"{action} existing_item.item_id")
-        payload = _update_payload_for_operation(operation, layout=layout)
+        payload = _update_payload_for_operation(operation, layout=layout, item_id_by_artifact=item_id_by_artifact)
         if host_item_type == "text":
             response = client.update_text(board_id, item_id, payload)
         elif host_item_type == "shape":
             response = client.update_shape(board_id, item_id, payload)
+        elif host_item_type == "frame":
+            response = client.update_frame(board_id, item_id, payload)
         else:
             raise MiroApiError(f"Unsupported host item type for update: {host_item_type}")
         return _result_entry_from_response(operation, artifact, response, board_url=board_url, execution_status="updated")
@@ -322,11 +390,13 @@ def _execute_single_operation(
         )
 
     if action.startswith(("create_", "ensure_")):
-        payload = _create_payload_for_operation(operation, layout=layout)
+        payload = _create_payload_for_operation(operation, layout=layout, item_id_by_artifact=item_id_by_artifact)
         if host_item_type == "text":
             response = client.create_text(board_id, payload)
         elif host_item_type == "shape":
             response = client.create_shape(board_id, payload)
+        elif host_item_type == "frame":
+            response = client.create_frame(board_id, payload)
         else:
             raise MiroApiError(f"Unsupported host item type for create: {host_item_type}")
         return _result_entry_from_response(operation, artifact, response, board_url=board_url, execution_status="created")
@@ -334,7 +404,13 @@ def _execute_single_operation(
     raise MiroApiError(f"Unsupported publish action: {action}")
 
 
-def _create_payload_for_operation(operation: dict[str, Any], *, layout: LayoutConfig, index: int = 0) -> dict[str, Any]:
+def _create_payload_for_operation(
+    operation: dict[str, Any],
+    *,
+    layout: LayoutConfig,
+    index: int = 0,
+    item_id_by_artifact: dict[str, str] | None = None,
+) -> dict[str, Any]:
     host_item_type = _host_item_type(operation, {})
     if host_item_type == "text":
         payload = {
@@ -348,25 +424,44 @@ def _create_payload_for_operation(operation: dict[str, Any], *, layout: LayoutCo
                 "fontSize": "14",
             },
         }
+        parent_payload = _parent_payload(operation, item_id_by_artifact)
+        if parent_payload is not None:
+            payload["parent"] = parent_payload
         return payload
 
     if host_item_type == "shape":
         payload = {
             "type": "shape",
             "data": {
-                "content": _shape_content_html(operation),
+                "content": _shape_content_html(operation, layout=layout),
                 "shape": "round_rectangle",
             },
             "position": _position_payload(operation, layout=layout, index=index),
-            "geometry": _shape_geometry(operation),
+            "geometry": _shape_geometry(operation, layout=layout),
             "style": _shape_style(operation, layout=layout),
         }
+        parent_payload = _parent_payload(operation, item_id_by_artifact)
+        if parent_payload is not None:
+            payload["parent"] = parent_payload
         return payload
+
+    if host_item_type == "frame":
+        return {
+            "data": {"title": _frame_title(operation)},
+            "position": _position_payload(operation, layout=layout, index=index),
+            "geometry": _frame_geometry(operation, layout=layout),
+            "style": _frame_style(operation, layout=layout),
+        }
 
     raise MiroApiError(f"Unsupported host item type for create payload: {host_item_type}")
 
 
-def _update_payload_for_operation(operation: dict[str, Any], *, layout: LayoutConfig) -> dict[str, Any]:
+def _update_payload_for_operation(
+    operation: dict[str, Any],
+    *,
+    layout: LayoutConfig,
+    item_id_by_artifact: dict[str, str] | None = None,
+) -> dict[str, Any]:
     existing_item = operation.get("existing_item") if isinstance(operation.get("existing_item"), dict) else {}
     host_item_type = _host_item_type(operation, existing_item)
     if host_item_type == "text":
@@ -374,18 +469,32 @@ def _update_payload_for_operation(operation: dict[str, Any], *, layout: LayoutCo
             "data": {"content": _operation_content_html(operation)},
             "geometry": {"width": _content_width(operation, layout=layout, existing_item=existing_item)},
         }
+        parent_payload = _parent_payload(operation, item_id_by_artifact)
+        if parent_payload is not None and operation.get("layout_policy") != "preserve":
+            payload["parent"] = parent_payload
         return payload
 
     if host_item_type == "shape":
         payload = {
             "data": {
-                "content": _shape_content_html(operation),
+                "content": _shape_content_html(operation, layout=layout),
                 "shape": "round_rectangle",
             },
-            "geometry": _shape_geometry(operation, existing_item),
+            "geometry": _shape_geometry(operation, layout=layout, existing_item=existing_item),
             "style": _shape_style(operation, layout=layout),
         }
+        parent_payload = _parent_payload(operation, item_id_by_artifact)
+        if parent_payload is not None and operation.get("layout_policy") != "preserve":
+            payload["parent"] = parent_payload
         return payload
+
+    if host_item_type == "frame":
+        return {
+            "data": {"title": _frame_title(operation)},
+            "position": _position_payload(operation, layout=layout, index=0),
+            "geometry": _frame_geometry(operation, layout=layout, existing_item=existing_item),
+            "style": _frame_style(operation, layout=layout),
+        }
 
     raise MiroApiError(f"Unsupported host item type for update payload: {host_item_type}")
 
@@ -630,11 +739,14 @@ def _artifact_sha256(
     artifact: dict[str, Any] | None,
     existing_item: dict[str, Any] | None = None,
 ) -> str | None:
+    operation_sha256 = operation.get("artifact_sha256")
+    if isinstance(operation_sha256, str) and operation_sha256:
+        return operation_sha256
     if artifact is not None:
         return artifact.get("sha256")
     if existing_item is not None:
         return existing_item.get("artifact_sha256") or existing_item.get("content_fingerprint")
-    if operation.get("item_type") in {"doc", "table"}:
+    if operation.get("item_type") in {"doc", "table", "source_frame"}:
         raise MiroApiError(f"Missing artifact sha256 for content operation {operation.get('op_id')}.")
     return None
 
@@ -660,7 +772,7 @@ def _planned_position(operation: dict[str, Any], *, layout: LayoutConfig, index:
     if action == "ensure_zone":
         return 0.0, base_y
     if action == "ensure_workstream_anchor":
-        return base_x, base_y
+        return base_x, base_y + (layout.zone_height / 2.0) + 26.0
     artifact_index = _deterministic_index(operation)
     return base_x, base_y + layout.content_start_y + (artifact_index * (layout.min_card_height + layout.content_gap_y))
 
@@ -674,8 +786,103 @@ def _deterministic_index(operation: dict[str, Any]) -> int:
     return int(artifact_rank) * 10 + int(section_rank)
 
 
+def _initialize_source_frame_meta(
+    operation: dict[str, Any],
+    *,
+    lane_y: dict[tuple[str, str], float],
+    lane_key: tuple[str, str],
+    phase_y: float,
+    workstream_x: float,
+    layout: LayoutConfig,
+) -> dict[str, Any]:
+    existing_item = operation.get("existing_item") if isinstance(operation.get("existing_item"), dict) else {}
+    existing_snapshot = existing_item.get("layout_snapshot") if isinstance(existing_item.get("layout_snapshot"), dict) else {}
+    preserve_layout = operation.get("layout_policy") == "preserve"
+    frame_width = max(layout.source_header_width, _source_group_width(layout) + (_source_frame_padding_x(layout) * 2.0))
+    top_padding = _source_frame_top_padding(layout)
+    bottom_padding = _source_frame_bottom_padding(layout)
+    lane_start_y = lane_y.get(lane_key, phase_y + layout.content_start_y)
+    position_x = float(existing_snapshot.get("x")) if preserve_layout and existing_snapshot.get("x") is not None else workstream_x + layout.source_content_indent_x
+    min_height = max(layout.source_header_height, top_padding + bottom_padding + layout.min_card_height)
+    geometry_height = float(existing_snapshot.get("height")) if preserve_layout and existing_snapshot.get("height") is not None else min_height
+    geometry_width = float(existing_snapshot.get("width")) if preserve_layout and existing_snapshot.get("width") is not None else frame_width
+    top_y = (
+        float(existing_snapshot.get("y")) - (float(existing_snapshot.get("height")) / 2.0)
+        if preserve_layout and existing_snapshot.get("y") is not None and existing_snapshot.get("height") is not None
+        else lane_start_y
+    )
+    return {
+        "operation_index": -1,
+        "position": {"x": position_x, "y": top_y + (geometry_height / 2.0)},
+        "geometry": {"width": geometry_width, "height": geometry_height},
+        "column_positions": [_source_frame_top_padding(layout) + (layout.min_card_height / 2.0) for _ in range(_source_column_count(layout))],
+        "padding_x": _source_frame_padding_x(layout),
+        "top_padding": top_padding,
+        "bottom_padding": bottom_padding,
+        "top_y": top_y,
+        "max_bottom": top_padding,
+        "max_right": _source_frame_padding_x(layout),
+    }
+
+
+def _finalize_source_frame_geometry(frame_meta: dict[str, Any], *, layout: LayoutConfig) -> dict[str, float]:
+    minimum_width = max(layout.source_header_width, _source_group_width(layout) + (_source_frame_padding_x(layout) * 2.0))
+    minimum_height = max(layout.source_header_height, frame_meta["top_padding"] + frame_meta["bottom_padding"] + layout.min_card_height)
+    return {
+        "width": max(minimum_width, float(frame_meta["max_right"]) + _source_frame_padding_x(layout)),
+        "height": max(minimum_height, float(frame_meta["max_bottom"]) + frame_meta["bottom_padding"]),
+    }
+
+
+def _source_frame_padding_x(layout: LayoutConfig) -> float:
+    return max(40.0, layout.content_gap_x * 0.75)
+
+
+def _source_frame_top_padding(layout: LayoutConfig) -> float:
+    return max(64.0, min(layout.source_header_height, 104.0))
+
+
+def _source_frame_bottom_padding(layout: LayoutConfig) -> float:
+    return max(40.0, layout.content_gap_y * 0.5)
+
+
+def _existing_item_ids_by_artifact(operations: list[dict[str, Any]]) -> dict[str, str]:
+    item_ids: dict[str, str] = {}
+    for operation in operations:
+        existing_item = operation.get("existing_item") if isinstance(operation.get("existing_item"), dict) else {}
+        artifact_id = operation.get("artifact_id")
+        item_id = existing_item.get("item_id")
+        if isinstance(artifact_id, str) and isinstance(item_id, str) and item_id:
+            item_ids[artifact_id] = item_id
+    return item_ids
+
+
+def _record_item_ids(item_id_by_artifact: dict[str, str], items: list[dict[str, Any]]) -> None:
+    for entry in items:
+        artifact_id = entry.get("artifact_id")
+        item_id = entry.get("item_id")
+        if isinstance(artifact_id, str) and isinstance(item_id, str) and item_id:
+            item_id_by_artifact[artifact_id] = item_id
+
+
+def _source_frame_artifact_id(source_artifact_id: str) -> str:
+    return f"source:{source_artifact_id}"
+
+
+def _parent_payload(operation: dict[str, Any], item_id_by_artifact: dict[str, str] | None) -> dict[str, Any] | None:
+    if not item_id_by_artifact:
+        return None
+    planned_parent_artifact_id = operation.get("planned_parent_artifact_id")
+    if isinstance(planned_parent_artifact_id, str) and planned_parent_artifact_id:
+        parent_item_id = item_id_by_artifact.get(planned_parent_artifact_id)
+        if parent_item_id:
+            return {"id": parent_item_id}
+    return None
+
+
 def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConfig) -> list[dict[str, Any]]:
     lane_y: dict[tuple[str, str], float] = {}
+    source_frames: dict[tuple[str, str, str], dict[str, Any]] = {}
     planned_operations: list[dict[str, Any]] = []
 
     for operation in operations:
@@ -685,25 +892,89 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
         workstream = str(planned.get("workstream") or "general")
         phase_y = layout.phase_y.get(phase_zone, 0.0)
         workstream_x = layout.workstream_x.get(workstream, 0.0)
+        lane_key = (phase_zone, workstream)
+        source_key = (phase_zone, workstream, str(planned.get("source_artifact_id") or planned.get("artifact_id") or ""))
 
         if action == "ensure_zone":
             planned["planned_position"] = {"x": 0.0, "y": phase_y}
         elif action == "ensure_workstream_anchor":
-            planned["planned_position"] = {"x": workstream_x, "y": phase_y}
+            anchor_y = phase_y + (layout.zone_height / 2.0) + 26.0
+            planned["planned_position"] = {"x": workstream_x, "y": anchor_y}
+            lane_y[lane_key] = anchor_y + (layout.workstream_header_height / 2.0) + 56.0
+        elif planned.get("item_type") == "source_frame":
+            frame_meta = _initialize_source_frame_meta(
+                planned,
+                lane_y=lane_y,
+                lane_key=lane_key,
+                phase_y=phase_y,
+                workstream_x=workstream_x,
+                layout=layout,
+            )
+            frame_meta["operation_index"] = len(planned_operations)
+            source_frames[source_key] = frame_meta
+            planned["planned_position"] = frame_meta["position"]
+            planned["planned_geometry"] = frame_meta["geometry"]
         elif action.startswith(("create_", "ensure_")) and planned.get("item_type") in {"doc", "table"}:
-            lane_key = (phase_zone, workstream)
-            current_y = lane_y.get(lane_key, phase_y + layout.content_start_y)
-            current_x = workstream_x
+            frame_meta = source_frames.get(source_key)
+            if frame_meta is None:
+                frame_meta = _initialize_source_frame_meta(
+                    planned,
+                    lane_y=lane_y,
+                    lane_key=lane_key,
+                    phase_y=phase_y,
+                    workstream_x=workstream_x,
+                    layout=layout,
+                )
+                source_frames[source_key] = frame_meta
+            column_index = min(range(len(frame_meta["column_positions"])), key=lambda idx: frame_meta["column_positions"][idx])
+            current_y = frame_meta["column_positions"][column_index]
+            current_x = _content_column_x(
+                left_padding=frame_meta["padding_x"],
+                column_index=column_index,
+                column_count=len(frame_meta["column_positions"]),
+                layout=layout,
+            )
             if _is_split_fragment(planned):
-                current_x += layout.fragment_indent_x
+                current_x += layout.fragment_indent_x / 2.0
             planned["planned_position"] = {"x": current_x, "y": current_y}
+            planned["planned_parent_artifact_id"] = _source_frame_artifact_id(str(planned.get("source_artifact_id") or ""))
             estimated_height = _estimated_content_height(planned, layout=layout)
-            lane_y[lane_key] = current_y + estimated_height + (
+            frame_meta["column_positions"][column_index] = current_y + estimated_height + (
                 layout.fragment_gap_y if _is_split_fragment(planned) else layout.content_gap_y
             )
+            frame_meta["max_bottom"] = max(frame_meta["max_bottom"], current_y + (estimated_height / 2.0))
+            frame_meta["max_right"] = max(
+                frame_meta["max_right"],
+                current_x + (_content_width(planned, layout=layout) / 2.0),
+            )
+            frame_meta["geometry"] = _finalize_source_frame_geometry(frame_meta, layout=layout)
+            frame_meta["position"]["y"] = frame_meta["top_y"] + (frame_meta["geometry"]["height"] / 2.0)
+            planned_frame = planned_operations[frame_meta["operation_index"]]
+            planned_frame["planned_geometry"] = frame_meta["geometry"]
+            planned_frame["planned_position"] = frame_meta["position"]
+            lane_y[lane_key] = frame_meta["position"]["y"] + (frame_meta["geometry"]["height"] / 2.0) + layout.source_gap_y
         planned_operations.append(planned)
 
     return planned_operations
+
+
+def _source_column_count(layout: LayoutConfig) -> int:
+    return max(1, int(round(layout.source_columns)))
+
+
+def _source_group_width(layout: LayoutConfig) -> float:
+    columns = _source_column_count(layout)
+    return (columns * layout.doc_width) + ((columns - 1) * layout.content_gap_x)
+
+
+def _content_column_x(*, left_padding: float, column_index: int, column_count: int, layout: LayoutConfig) -> float:
+    if column_count <= 1:
+        return left_padding + (layout.doc_width / 2.0)
+    return left_padding + (layout.doc_width / 2.0) + (column_index * (layout.doc_width + layout.content_gap_x))
+
+
+def _max(left: float, right: float) -> float:
+    return left if left >= right else right
 
 
 def _is_split_fragment(operation: dict[str, Any]) -> bool:
@@ -718,7 +989,7 @@ def _estimated_content_height(operation: dict[str, Any], *, layout: LayoutConfig
         rows = operation.get("rows") if isinstance(operation.get("rows"), list) else []
         return max(layout.min_card_height, 120.0 + (len(rows) * 44.0))
 
-    content_html = _operation_content_html(operation)
+    content_html = _shape_content_html(operation, layout=layout) if operation.get("item_type") == "doc" else _operation_content_html(operation)
     plain_text = re.sub(r"<[^>]+>", " ", content_html)
     plain_text = re.sub(r"\s+", " ", plain_text).strip()
     estimated_lines = max(
@@ -734,16 +1005,32 @@ def _content_width(
     layout: LayoutConfig,
     existing_item: dict[str, Any] | None = None,
 ) -> float:
+    planned_geometry = operation.get("planned_geometry")
+    if isinstance(planned_geometry, dict) and planned_geometry.get("width") is not None:
+        return float(planned_geometry["width"])
     if existing_item:
         snapshot = existing_item.get("layout_snapshot")
         if isinstance(snapshot, dict) and snapshot.get("width") is not None:
             return float(snapshot["width"])
+    if operation.get("item_type") == "source_frame":
+        return max(layout.source_header_width, _source_group_width(layout))
     if operation.get("item_type") == "table":
         return layout.table_width
     return layout.doc_width
 
 
-def _shape_geometry(operation: dict[str, Any], existing_item: dict[str, Any] | None = None) -> dict[str, float]:
+def _shape_geometry(
+    operation: dict[str, Any],
+    *,
+    layout: LayoutConfig,
+    existing_item: dict[str, Any] | None = None,
+) -> dict[str, float]:
+    planned_geometry = operation.get("planned_geometry")
+    if isinstance(planned_geometry, dict) and planned_geometry.get("width") is not None and planned_geometry.get("height") is not None:
+        return {
+            "width": float(planned_geometry["width"]),
+            "height": float(planned_geometry["height"]),
+        }
     if existing_item:
         snapshot = existing_item.get("layout_snapshot")
         if isinstance(snapshot, dict) and snapshot.get("width") is not None and snapshot.get("height") is not None:
@@ -752,14 +1039,61 @@ def _shape_geometry(operation: dict[str, Any], existing_item: dict[str, Any] | N
                 "height": float(snapshot["height"]),
             }
     if operation.get("item_type") == "zone":
-        return {"width": 2400.0, "height": 180.0}
+        return {"width": layout.zone_width, "height": layout.zone_height}
+    if operation.get("item_type") == "workstream_anchor":
+        return {
+            "width": max(layout.workstream_header_width, _source_group_width(layout) + 120.0),
+            "height": layout.workstream_header_height,
+        }
+    if operation.get("item_type") == "doc":
+        return {
+            "width": _content_width(operation, layout=layout, existing_item=existing_item),
+            "height": _estimated_content_height(operation, layout=layout),
+        }
     return {"width": 360.0, "height": 120.0}
 
 
 def _shape_style(operation: dict[str, Any], *, layout: LayoutConfig) -> dict[str, Any]:
     phase_zone = str(operation.get("phase_zone") or "planning")
+    workstream = str(operation.get("workstream") or "general")
+    item_type = str(operation.get("item_type") or "")
+    accent = layout.workstream_colors.get(workstream, "#6b7280")
+    phase_fill = layout.phase_colors.get(phase_zone, "#f5f6f8")
+    if item_type == "zone":
+        return {
+            "fillColor": phase_fill,
+            "fillOpacity": "0.45",
+            "borderColor": phase_fill,
+            "borderStyle": "normal",
+            "borderWidth": "1.1",
+            "textAlign": "left",
+            "textAlignVertical": "middle",
+            "fontSize": str(int(layout.zone_title_font_size)),
+        }
+    if item_type == "workstream_anchor":
+        return {
+            "fillColor": _lighten_hex(accent, 0.80),
+            "fillOpacity": "1.0",
+            "borderColor": accent,
+            "borderStyle": "normal",
+            "borderWidth": "2.0",
+            "textAlign": "left",
+            "textAlignVertical": "middle",
+            "fontSize": str(int(layout.workstream_title_font_size)),
+        }
+    if item_type == "doc":
+        return {
+            "fillColor": "#ffffff",
+            "fillOpacity": "1.0",
+            "borderColor": _lighten_hex(accent, 0.35),
+            "borderStyle": "normal",
+            "borderWidth": "2.0",
+            "textAlign": "left",
+            "textAlignVertical": "top",
+            "fontSize": str(int(layout.doc_font_size)),
+        }
     return {
-        "fillColor": layout.phase_colors.get(phase_zone, "#f5f6f8"),
+        "fillColor": phase_fill,
         "fillOpacity": "1.0",
         "borderColor": "#1a1a1a",
         "borderStyle": "normal",
@@ -770,16 +1104,116 @@ def _shape_style(operation: dict[str, Any], *, layout: LayoutConfig) -> dict[str
     }
 
 
-def _shape_content_html(operation: dict[str, Any]) -> str:
+def _frame_geometry(
+    operation: dict[str, Any],
+    *,
+    layout: LayoutConfig,
+    existing_item: dict[str, Any] | None = None,
+) -> dict[str, float]:
+    planned_geometry = operation.get("planned_geometry")
+    if isinstance(planned_geometry, dict) and planned_geometry.get("width") is not None and planned_geometry.get("height") is not None:
+        return {
+            "width": float(planned_geometry["width"]),
+            "height": float(planned_geometry["height"]),
+        }
+    if existing_item:
+        snapshot = existing_item.get("layout_snapshot")
+        if isinstance(snapshot, dict) and snapshot.get("width") is not None and snapshot.get("height") is not None:
+            return {
+                "width": float(snapshot["width"]),
+                "height": float(snapshot["height"]),
+            }
+    return {
+        "width": max(layout.source_header_width, _source_group_width(layout) + (_source_frame_padding_x(layout) * 2.0)),
+        "height": max(layout.source_header_height, layout.min_card_height + _source_frame_top_padding(layout) + _source_frame_bottom_padding(layout)),
+    }
+
+
+def _frame_style(operation: dict[str, Any], *, layout: LayoutConfig) -> dict[str, Any]:
+    workstream = str(operation.get("workstream") or "general")
+    accent = layout.workstream_colors.get(workstream, "#6b7280")
+    return {
+        "fillColor": _lighten_hex(accent, 0.95),
+    }
+
+
+def _shape_content_html(operation: dict[str, Any], *, layout: LayoutConfig) -> str:
     title = html.escape(str(operation.get("title") or operation.get("target_key") or ""))
     phase = html.escape(str(operation.get("phase_zone") or ""))
     workstream = html.escape(str(operation.get("workstream") or ""))
+    item_type = str(operation.get("item_type") or "")
     lines = [f"<p><strong>{title}</strong></p>"]
-    if operation.get("item_type") == "zone":
+    if item_type == "zone":
         lines.append(f"<p>{phase.title()} phase</p>")
+    elif item_type == "doc":
+        lines = _doc_summary_html(operation, layout=layout)
     elif workstream and workstream != "general":
         lines.append(f"<p>{phase.title()} / {workstream.title()}</p>")
     return "".join(lines)
+
+
+def _doc_summary_html(operation: dict[str, Any], *, layout: LayoutConfig) -> list[str]:
+    title = html.escape(_doc_card_title(operation))
+    phase = html.escape(str(operation.get("phase_zone") or "").replace("_", " ").title())
+    workstream = html.escape(str(operation.get("workstream") or "").title())
+    content = _sanitize_markdown_for_miro(str(operation.get("content") or ""))
+    paragraph_limit = int(layout.summary_paragraph_chars)
+    max_bullets = max(0, int(layout.summary_max_bullets))
+    bullet_limit = int(layout.summary_bullet_chars)
+
+    paragraphs = _summary_paragraphs(content)
+    bullets = _summary_bullets(content)
+    lines = [
+        f"<p><strong>{title}</strong></p>",
+        f"<p><em>{phase} / {workstream}</em></p>",
+    ]
+    if paragraphs:
+        lines.append(f"<p>{html.escape(_truncate_text(paragraphs[0], paragraph_limit))}</p>")
+    if bullets:
+        for bullet in bullets[:max_bullets]:
+            lines.append(f"<p>&bull; {html.escape(_truncate_text(bullet, bullet_limit))}</p>")
+    return lines
+
+
+def _doc_card_title(operation: dict[str, Any]) -> str:
+    raw_title = str(operation.get("title") or operation.get("target_key") or "").strip()
+    heading_level = int(operation.get("heading_level") or 0)
+    last_segment = raw_title.rsplit(" / ", 1)[-1].strip() if " / " in raw_title else raw_title
+    if heading_level <= 0:
+        return "Overview"
+    if heading_level == 1:
+        normalized = last_segment.lower()
+        if normalized in {"overview", "summary"}:
+            return last_segment
+        if "document" in normalized or normalized == "prd" or "requirements" in normalized or len(last_segment) > 48:
+            return "Summary"
+        return last_segment
+    return last_segment
+
+
+def _frame_title(operation: dict[str, Any]) -> str:
+    title = str(operation.get("title") or "").strip()
+    subtitle = str(operation.get("content") or "").strip()
+    if subtitle:
+        return f"{title}\n{subtitle}"
+    return title
+
+
+def _lighten_hex(color: str, amount: float) -> str:
+    normalized = color.strip().lstrip("#")
+    if len(normalized) != 6:
+        return color
+    try:
+        red = int(normalized[0:2], 16)
+        green = int(normalized[2:4], 16)
+        blue = int(normalized[4:6], 16)
+    except ValueError:
+        return color
+    amount = min(max(amount, 0.0), 1.0)
+    red = int(red + ((255 - red) * amount))
+    green = int(green + ((255 - green) * amount))
+    blue = int(blue + ((255 - blue) * amount))
+    return f"#{red:02x}{green:02x}{blue:02x}"
 
 
 def _operation_content_html(operation: dict[str, Any]) -> str:
@@ -787,6 +1221,50 @@ def _operation_content_html(operation: dict[str, Any]) -> str:
         return _table_operation_html(operation)
     sanitized = _sanitize_markdown_for_miro(str(operation.get("content") or ""))
     return _markdown_to_simple_html(sanitized)
+
+
+def _summary_paragraphs(content: str) -> list[str]:
+    paragraphs: list[str] = []
+    buffer: list[str] = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if buffer:
+                paragraphs.append(" ".join(buffer).strip())
+                buffer = []
+            continue
+        if line.startswith(("#", "-", "*", "1.", "2.", "3.", "4.", "5.", "```")):
+            if buffer:
+                paragraphs.append(" ".join(buffer).strip())
+                buffer = []
+            continue
+        buffer.append(line)
+    if buffer:
+        paragraphs.append(" ".join(buffer).strip())
+    return [paragraph for paragraph in paragraphs if paragraph]
+
+
+def _summary_bullets(content: str) -> list[str]:
+    bullets: list[str] = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if line.startswith(("- ", "* ")):
+            bullets.append(line[2:].strip())
+            continue
+        match = re.match(r"^\d+\.\s+(?P<item>.+?)\s*$", line)
+        if match is not None:
+            bullets.append(match.group("item"))
+    return [bullet for bullet in bullets if bullet]
+
+
+def _truncate_text(value: str, limit: int) -> str:
+    normalized = re.sub(r"\s+", " ", value).strip()
+    if len(normalized) <= limit:
+        return normalized
+    truncated = normalized[: max(limit - 1, 1)].rsplit(" ", 1)[0].strip()
+    if not truncated:
+        truncated = normalized[: max(limit - 1, 1)].strip()
+    return truncated + "…"
 
 
 def _table_operation_html(operation: dict[str, Any]) -> str:

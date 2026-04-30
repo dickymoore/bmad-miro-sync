@@ -71,7 +71,17 @@ class PlannerTests(unittest.TestCase):
             self.assertEqual(readiness_operation.phase_zone, "implementation_readiness")
             self.assertEqual(readiness_operation.workstream, "delivery")
             self.assertEqual(readiness_operation.container_target_key, "workstream:implementation_readiness:delivery")
-            self.assertEqual(readiness_operation.deterministic_order.object_rank, 2)
+            self.assertEqual(readiness_operation.deterministic_order.object_rank, 3)
+            source_frame = next(
+                operation
+                for operation in plan.operations
+                if operation.item_type == "source_frame"
+                and operation.source_artifact_id == "_bmad-output/planning-artifacts/prd.md"
+            )
+            self.assertEqual(source_frame.title, "PRD")
+            self.assertEqual(source_frame.artifact_id, "source:_bmad-output/planning-artifacts/prd.md")
+            self.assertEqual(source_frame.container_target_key, "workstream:planning:product")
+            self.assertEqual(source_frame.deterministic_order.object_rank, 2)
             prd_sections = [artifact for artifact in plan.artifacts if artifact.source_artifact_id.endswith("prd.md")]
             self.assertEqual(
                 [artifact.artifact_id for artifact in prd_sections],
@@ -1169,6 +1179,71 @@ phase_zone = "workstream_anchor"
                 [artifact.section_sibling_index for artifact in split_artifacts],
                 list(range(1, len(split_artifacts) + 1)),
             )
+
+    def test_plan_emits_source_groups_for_real_bmad_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            config_path = root / ".bmad-miro.toml"
+            config_path.write_text(CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text(
+                "# PRD\n\nIntro\n\n## Goals\n\nBody\n",
+                encoding="utf-8",
+            )
+            (root / "_bmad-output/planning-artifacts/architecture.md").write_text(
+                "# Architecture\n\nSystem design\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+            plan = build_sync_plan(root, config_path, config)
+
+            self.assertEqual(
+                {group.source_artifact_id for group in plan.source_groups},
+                {
+                    "_bmad-output/planning-artifacts/architecture.md",
+                    "_bmad-output/planning-artifacts/prd.md",
+                },
+            )
+            prd_group = next(group for group in plan.source_groups if group.source_artifact_id.endswith("prd.md"))
+            self.assertEqual(prd_group.relative_path, "_bmad-output/planning-artifacts/prd.md")
+            self.assertEqual(prd_group.artifact_class, "prd")
+            self.assertEqual(prd_group.phase_zones, ("planning",))
+            self.assertEqual(prd_group.workstreams, ("product",))
+            self.assertEqual(
+                prd_group.section_artifact_ids,
+                (
+                    "_bmad-output/planning-artifacts/prd.md#prd",
+                    "_bmad-output/planning-artifacts/prd.md#prd/goals",
+                ),
+            )
+            self.assertIn("source_frame:_bmad-output/planning-artifacts/prd.md", prd_group.operation_ids)
+            self.assertTrue(all(not op_id.startswith("zone:") for op_id in prd_group.operation_ids))
+            self.assertTrue(all(not op_id.startswith("workstream:") for op_id in prd_group.operation_ids))
+
+    def test_split_sections_roll_up_under_single_source_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            config_path = root / ".bmad-miro.toml"
+            config_path.write_text(CONFIG_TEXT, encoding="utf-8")
+            large_body = "\n\n".join(
+                f"Paragraph {index}: " + ("This section carries detailed planning context. " * 40)
+                for index in range(1, 18)
+            )
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text(
+                f"# PRD\n\n## First Principles Thinking\n\n{large_body}\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+            plan = build_sync_plan(root, config_path, config)
+
+            source_group = next(group for group in plan.source_groups if group.source_artifact_id.endswith("prd.md"))
+            fragment_ids = [artifact_id for artifact_id in source_group.section_artifact_ids if "::part-" in artifact_id]
+            self.assertGreaterEqual(len(fragment_ids), 2)
+            self.assertTrue(set(fragment_ids).issubset(set(source_group.section_artifact_ids)))
+            self.assertEqual(set(source_group.section_artifact_ids), {artifact.artifact_id for artifact in plan.artifacts if artifact.source_artifact_id.endswith("prd.md")})
 
 
 if __name__ == "__main__":

@@ -525,7 +525,7 @@ class ManifestStateTests(unittest.TestCase):
 
             self.assertEqual(
                 [operation["action"] for operation in repeat_plan_payload["operations"]],
-                ["ensure_zone", "ensure_workstream_anchor", "skip"],
+                ["ensure_zone", "ensure_workstream_anchor", "skip", "skip"],
             )
             self.assertEqual(manifest.last_run["run_status"], "complete")
             self.assertEqual(manifest.last_run["pending_operation_count"], 0)

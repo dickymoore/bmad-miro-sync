@@ -16,12 +16,20 @@ manifest_path = ".bmad-miro-sync/state.json"
 
 [layout]
 create_phase_frames = true
-#doc_width = 680
-#table_width = 840
-#content_start_y = 260
-#content_gap_y = 120
-#fragment_indent_x = 140
-#fragment_gap_y = 90
+#doc_width = 620
+#table_width = 760
+#content_start_y = 220
+#content_gap_y = 96
+#source_gap_y = 88
+#source_header_width = 760
+#source_header_height = 132
+#source_content_indent_x = 84
+#fragment_indent_x = 150
+#fragment_gap_y = 72
+#zone_width = 6400
+#zone_height = 180
+#workstream_header_width = 1180
+#workstream_header_height = 120
 
 #[layout.phase_y]
 #analysis = -1800
@@ -37,10 +45,17 @@ create_phase_frames = true
 #delivery = 2400
 
 #[layout.phase_colors]
-#analysis = "#d5f692"
-#planning = "#a6ccf5"
-#solutioning = "#fff9b1"
-#implementation = "#ffcee0"
+#analysis = "#d8f0dc"
+#planning = "#dbe7ff"
+#solutioning = "#fff0c9"
+#implementation = "#f8d9dc"
+
+#[layout.workstream_colors]
+#general = "#6b7280"
+#product = "#2563eb"
+#ux = "#d97706"
+#architecture = "#059669"
+#delivery = "#7c3aed"
 
 [publish]
 analysis = true

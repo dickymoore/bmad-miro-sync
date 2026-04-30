@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-_CONTENT_ITEM_TYPES = {"doc", "table"}
+_CONTENT_ITEM_TYPES = {"doc", "table", "source_frame"}
 _STATE_VERSION = 3
 _TERMINAL_EXECUTION_STATUSES = {"archived", "removed"}
 _LAYOUT_SNAPSHOT_FIELDS = (
@@ -198,9 +198,10 @@ def _build_operation_state(
     identity_source = dict(existing_source)
     identity_source.update(result_source)
     content_fingerprint = _artifact_sha256_for_entry(
-        result_source,
+        result_source or operation,
         operation["item_type"],
         artifact,
+        operation=operation,
         fallback_source=existing_source,
     )
     sync_timestamp = _operation_sync_timestamp(
@@ -322,7 +323,13 @@ def _store_item_entry(
     if previous_artifact_id and previous_artifact_id != artifact_id:
         items.pop(previous_artifact_id, None)
 
-    artifact_sha256 = _artifact_sha256_for_entry(entry, item_type, artifact, fallback_source=existing_source)
+    artifact_sha256 = _artifact_sha256_for_entry(
+        entry,
+        item_type,
+        artifact,
+        operation=operation,
+        fallback_source=existing_source,
+    )
     sync_timestamp = _sync_timestamp(entry, results)
     lifecycle_state = _lifecycle_state(
         entry,
@@ -427,11 +434,15 @@ def _artifact_sha256_for_entry(
     entry: dict[str, Any],
     item_type: str,
     artifact: dict[str, Any] | None = None,
+    *,
+    operation: dict[str, Any] | None = None,
     fallback_source: dict[str, Any] | None = None,
 ) -> str | None:
     artifact_sha256 = entry.get("artifact_sha256")
     if artifact_sha256 is None and artifact is not None:
         artifact_sha256 = artifact.get("sha256")
+    if artifact_sha256 is None and operation is not None:
+        artifact_sha256 = operation.get("artifact_sha256")
     if artifact_sha256 is None and fallback_source is not None:
         artifact_sha256 = fallback_source.get("artifact_sha256") or fallback_source.get("content_fingerprint")
     if item_type in _CONTENT_ITEM_TYPES and not artifact_sha256:

@@ -19,6 +19,31 @@ SYNC_POLICY_BLOCK_RE = re.compile(
     r"(?ms)^## (?P<title>.+? Sync Policy)\n\n(?P<body>.+?)(?:\n{2,}|\Z)"
 )
 
+BMAD_WORKFLOW_CUSTOMIZATION_SKILLS = (
+    "bmad-create-prd",
+    "bmad-edit-prd",
+    "bmad-create-ux-design",
+    "bmad-create-architecture",
+    "bmad-create-epics-and-stories",
+    "bmad-create-story",
+    "bmad-technical-research",
+    "bmad-market-research",
+    "bmad-domain-research",
+    "bmad-product-brief",
+    "bmad-document-project",
+    "bmad-generate-project-context",
+)
+
+_WORKFLOW_ON_COMPLETE_INSTRUCTION = (
+    "If this workflow created or updated `_bmad-output` artifacts or other stakeholder-facing project documentation, "
+    "and the user has not explicitly opted out of sync, run the project-local `bmad-miro-sync` skill before exiting. "
+    "Default to changed-only sync behavior rather than a full-board republish. "
+    "When the changed work clearly maps to one BMAD source artifact, prefer source-scoped sync for that source. "
+    "Only prefer a full-board sync when bootstrapping an empty board, rebuilding layout from scratch, or when the user explicitly asks for it. "
+    "Prefer `bmad-miro-collaboration` instead when the user wants publish plus feedback ingest as one loop. "
+    "If sync is blocked, report the blocker clearly before exiting."
+)
+
 
 def render_config(board_url: str) -> str:
     return f"""board_url = "{board_url}"
@@ -39,12 +64,20 @@ manifest_path = ".bmad-miro-sync/state.json"
 
 [layout]
 create_phase_frames = true
-#doc_width = 680
-#table_width = 840
-#content_start_y = 260
-#content_gap_y = 120
-#fragment_indent_x = 140
-#fragment_gap_y = 90
+#doc_width = 620
+#table_width = 760
+#content_start_y = 220
+#content_gap_y = 96
+#source_gap_y = 88
+#source_header_width = 760
+#source_header_height = 132
+#source_content_indent_x = 84
+#fragment_indent_x = 150
+#fragment_gap_y = 72
+#zone_width = 6400
+#zone_height = 180
+#workstream_header_width = 1180
+#workstream_header_height = 120
 
 #[layout.phase_y]
 #analysis = -1800
@@ -60,10 +93,17 @@ create_phase_frames = true
 #delivery = 2400
 
 #[layout.phase_colors]
-#analysis = "#d5f692"
-#planning = "#a6ccf5"
-#solutioning = "#fff9b1"
-#implementation = "#ffcee0"
+#analysis = "#d8f0dc"
+#planning = "#dbe7ff"
+#solutioning = "#fff0c9"
+#implementation = "#f8d9dc"
+
+#[layout.workstream_colors]
+#general = "#6b7280"
+#product = "#2563eb"
+#ux = "#d97706"
+#architecture = "#059669"
+#delivery = "#7c3aed"
 
 [publish]
 analysis = true
@@ -74,6 +114,16 @@ stories_table = true
 
 [sync]
 removed_item_policy = "archive"
+"""
+
+
+def render_bmad_workflow_customization(skill_name: str) -> str:
+    return f"""# Team override for {skill_name}
+# Committed to the repo and merged over the skill's own customize.toml.
+# This is the BMAD-native integration point for Miro sync behavior.
+
+[workflow]
+on_complete = "{_WORKFLOW_ON_COMPLETE_INSTRUCTION}"
 """
 
 
@@ -95,6 +145,39 @@ This skill is the project-local automation wrapper for the external `bmad-miro-s
 - when the user says to sync BMad outputs to Miro
 - when stakeholders need the latest project state reflected in Miro
 
+## Supported Requests
+
+This skill should handle these requests directly:
+
+- "Which BMAD outputs are up to date and which need syncing?"
+- "Sync changed files only."
+- "Sync the PRD."
+- "Sync the architecture doc."
+- "Sync this one BMAD output to Miro."
+
+When the user asks for status, run:
+
+```bash
+PYTHONPATH={sync_src} \\
+python3 -m bmad_miro_sync source-status \\
+  --project-root {project_root} \\
+  --config {config_path}
+```
+
+Then summarize which `source_artifact_id` values are:
+
+- `published`
+- `out_of_date`
+- `partially_published`
+- `failed`
+- `not_published`
+
+When the user names a specific BMAD output, prefer source-scoped sync with that exact `source_artifact_id`.
+
+When the user asks to sync generally without naming a source, prefer changed-only sync by default rather than a full-board republish.
+
+If Playwright MCP is available in the Codex session, use it after publish runs to refresh the Miro board, inspect the visual result, and tighten the layout feedback loop.
+
 ## Repo-Specific Settings
 
 - Project root: `{project_root}`
@@ -104,7 +187,7 @@ This skill is the project-local automation wrapper for the external `bmad-miro-s
 
 ## Workflow
 
-1. Export the Codex bundle:
+1. Export or refresh the Codex bundle:
 
 ```bash
 PYTHONPATH={sync_src} \\
@@ -114,14 +197,24 @@ python3 -m bmad_miro_sync export-codex-bundle \\
   --output-dir {runtime_dir}
 ```
 
-2. Read:
+2. If the user asked for source status only, stop after reporting the `source-status` output.
+
+3. Read:
 
 - `{runtime_dir}/plan.json`
 - `{runtime_dir}/publish-bundle.json`
 - `{runtime_dir}/codex-bundle.json`
 - `{runtime_dir}/instructions.md`
 
-3. Execute the plan in order with Codex Miro tools:
+4. Choose the smallest safe publish scope:
+
+- if the user named a specific BMAD source file, use that source only
+- otherwise use changed-only sync by default
+- only use a full-board publish when bootstrapping an empty board, rebuilding layout from scratch, or when the user explicitly asks for it
+
+5. For layout or presentation work, inspect `{config_path}` before publishing and treat the `[layout]` section as the primary tuning surface. Prefer changing layout or renderer behavior over manually dragging Miro items.
+
+6. Execute the plan in order with Codex Miro tools:
 
 - `ensure_zone`
 - `ensure_workstream_anchor`
@@ -173,7 +266,7 @@ If you set up REST auth manually, the operator must first:
 3. install and authorize the app
 4. export the resulting OAuth access token as `MIRO_API_TOKEN`
 
-4. Write:
+7. Write:
 
 - `{runtime_dir}/results.json`
 
@@ -181,7 +274,33 @@ The JSON shape must match the template in:
 
 - `{runtime_dir}/results.template.json`
 
-5. Apply the results:
+8. Apply the results:
+
+For source-scoped publish, use:
+
+```bash
+PYTHONPATH={sync_src} \\
+python3 -m bmad_miro_sync publish-direct \\
+  --project-root {project_root} \\
+  --config {config_path} \\
+  --plan {runtime_dir}/plan.json \\
+  --results {runtime_dir}/results.json \\
+  --source "_bmad-output/planning-artifacts/prd.md" \\
+  --apply-results
+```
+
+For changed-only publish, use:
+
+```bash
+PYTHONPATH={sync_src} \\
+python3 -m bmad_miro_sync publish-direct \\
+  --project-root {project_root} \\
+  --config {config_path} \\
+  --plan {runtime_dir}/plan.json \\
+  --results {runtime_dir}/results.json \\
+  --changed-only \\
+  --apply-results
+```
 
 ```bash
 PYTHONPATH={sync_src} \\
@@ -201,6 +320,9 @@ python3 -m bmad_miro_sync apply-results \\
 - When an operation exports `degraded = true`, execute `resolved_item_type` and preserve the fallback metadata in `results.json`
 - Do not fabricate successful results if a Miro operation fails
 - Prefer updating an existing mapped item over creating a duplicate
+- Prefer `--source` or `--changed-only` over full-board publish unless there is a concrete reason not to
+- For board presentation work, prefer renderer or config changes over manual board rearrangement
+- When Playwright MCP is available, use it to refresh and inspect the board after publish runs instead of relying on the user to describe the result from memory
 - At the end, report which Miro items were created or updated
 
 ## Expected Use
@@ -464,6 +586,38 @@ It points at the current Miro board:
 
 - `{board_url}`
 
+## BMAD Integration
+
+When upstream BMAD is present, this installer writes team overrides under:
+
+- `{project_root}/_bmad/custom/`
+
+Those overrides use BMAD's native customization layer instead of patching generated skill markdown directly. They attach Miro sync behavior to BMAD workflow completion through committed `_bmad/custom/*.toml` files.
+
+## Browser Review Loop
+
+For a short visual feedback loop, use Playwright MCP rather than Puppeteer MCP. The current recommended server is Microsoft's Playwright MCP:
+
+- https://github.com/microsoft/playwright-mcp
+
+Add it to Codex before starting a session:
+
+```toml
+[mcp_servers.playwright]
+command = "npx"
+args = ["@playwright/mcp@latest"]
+```
+
+Then restart Codex. Once the server is available in-session, the preferred presentation loop is:
+
+1. publish to Miro
+2. refresh the board with Playwright MCP
+3. inspect the resulting board visually
+4. adjust renderer or layout config
+5. republish and compare
+
+Do not use Puppeteer MCP by default unless you have a specific reason to diverge from the maintained Playwright path.
+
 ## Export A Codex Bundle
 
 From the repo root:
@@ -586,6 +740,13 @@ The intended project workflow is:
 
 1. run a BMad step that updates `_bmad-output`
 2. run `bmad-miro-sync` to publish to Miro, or `bmad-miro-collaboration` to publish and bring review state back
+
+For board presentation work, prefer renderer and config changes over manually arranging items. The current renderer is designed to create:
+
+1. phase banners
+2. workstream headers
+3. source header cards
+4. grouped content cards under each source
 
 To bring stakeholder comments back in as review material:
 

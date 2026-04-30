@@ -4,14 +4,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .templates import (
+    BMAD_WORKFLOW_CUSTOMIZATION_SKILLS,
     ensure_gitignore_entries,
-    insert_sync_policy,
+    render_bmad_workflow_customization,
     render_collaboration_skill,
     render_comment_ingest_skill,
     render_config,
     render_doc,
     render_skill,
-    skill_files,
 )
 
 
@@ -20,6 +20,7 @@ class InstallResult:
     project_root: Path
     written_files: list[Path]
     backup_files: list[Path]
+    bmad_customizations: list[Path]
     patched_skills: list[Path]
     skipped_skills: list[Path]
 
@@ -44,6 +45,7 @@ def install_project(
 
     written_files: list[Path] = []
     backup_files: list[Path] = []
+    bmad_customizations: list[Path] = []
     patched_skills: list[Path] = []
     skipped_skills: list[Path] = []
 
@@ -94,19 +96,22 @@ def install_project(
         written_files.append(gitignore_path)
 
     if patch_bmad_skills:
-        for skill_file in skill_files(root):
-            original = skill_file.read_text(encoding="utf-8")
-            updated = insert_sync_policy(original)
-            if updated != original:
-                skill_file.write_text(updated, encoding="utf-8")
-                patched_skills.append(skill_file)
-            else:
-                skipped_skills.append(skill_file)
+        custom_root = root / "_bmad" / "custom"
+        custom_root.mkdir(parents=True, exist_ok=True)
+        for skill_name in BMAD_WORKFLOW_CUSTOMIZATION_SKILLS:
+            customization_path = custom_root / f"{skill_name}.toml"
+            customization_path.write_text(
+                render_bmad_workflow_customization(skill_name),
+                encoding="utf-8",
+            )
+            written_files.append(customization_path)
+            bmad_customizations.append(customization_path)
 
     return InstallResult(
         project_root=root,
         written_files=written_files,
         backup_files=backup_files,
+        bmad_customizations=bmad_customizations,
         patched_skills=patched_skills,
         skipped_skills=skipped_skills,
     )

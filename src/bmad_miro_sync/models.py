@@ -108,6 +108,66 @@ class ArtifactDiscoveryResult:
 
 
 @dataclass(slots=True)
+class SourceGroup:
+    source_artifact_id: str
+    relative_path: str
+    artifact_class: str
+    phase_zones: tuple[str, ...] = ()
+    workstreams: tuple[str, ...] = ()
+    section_artifact_ids: tuple[str, ...] = ()
+    operation_ids: tuple[str, ...] = ()
+    source_sha256: str = ""
+    pending_operation_count: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["phase_zones"] = list(self.phase_zones)
+        payload["workstreams"] = list(self.workstreams)
+        payload["section_artifact_ids"] = list(self.section_artifact_ids)
+        payload["operation_ids"] = list(self.operation_ids)
+        return payload
+
+
+@dataclass(slots=True)
+class SourcePublishStatus:
+    source_artifact_id: str
+    relative_path: str
+    artifact_class: str
+    source_sha256: str
+    published_source_sha256: str | None = None
+    status: str = "not_published"
+    derived_section_count: int = 0
+    published_section_count: int = 0
+    failed_section_count: int = 0
+    pending_section_count: int = 0
+    section_artifact_ids: tuple[str, ...] = ()
+    last_successful_publish_at: str | None = None
+    last_attempted_publish_at: str | None = None
+    last_failed_publish_at: str | None = None
+    last_error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["section_artifact_ids"] = list(self.section_artifact_ids)
+        return payload
+
+
+@dataclass(slots=True)
+class SourceStatusLedger:
+    version: int
+    sources: dict[str, SourcePublishStatus] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "sources": {
+                source_artifact_id: status.to_dict()
+                for source_artifact_id, status in self.sources.items()
+            },
+        }
+
+
+@dataclass(slots=True)
 class DeterministicOrder:
     zone_rank: int = 0
     workstream_rank: int = 0
@@ -142,6 +202,7 @@ class PublishOperation:
     artifact_id: str
     source_artifact_id: str
     target_key: str
+    artifact_sha256: str | None = None
     container_target_key: str | None = None
     content: str | None = None
     columns: list[dict[str, Any]] | None = None
@@ -174,6 +235,7 @@ class SyncPlan:
     manifest_path: str
     operations: list[PublishOperation] = field(default_factory=list)
     artifacts: list[ArtifactRecord] = field(default_factory=list)
+    source_groups: list[SourceGroup] = field(default_factory=list)
     discovery: DiscoveryReport = field(default_factory=DiscoveryReport)
     object_strategies: list[ObjectStrategyDecision] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -188,5 +250,6 @@ class SyncPlan:
             "discovery": self.discovery.to_dict(),
             "object_strategies": [strategy.to_dict() for strategy in self.object_strategies],
             "artifacts": [artifact.to_dict() for artifact in self.artifacts],
+            "source_groups": [source_group.to_dict() for source_group in self.source_groups],
             "operations": [operation.to_dict() for operation in self.operations],
         }

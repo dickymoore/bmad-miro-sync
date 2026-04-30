@@ -10,7 +10,7 @@ from .classifier import phase_zone_rank, workstream_rank
 from .config import SyncConfig
 from .discovery import discover_artifacts
 from .manifest import load_manifest
-from .models import ArtifactRecord, DeterministicOrder, ObjectStrategyDecision, PublishOperation, SyncPlan
+from .models import ArtifactRecord, DeterministicOrder, ObjectStrategyDecision, PublishOperation, SourceGroup, SyncPlan
 
 
 PHASE_FLAGS = {
@@ -37,13 +37,22 @@ WORKSTREAM_TITLES = {
 }
 
 _CONTENT_ITEM_TYPES = {"doc", "table"}
+_MANAGED_ITEM_TYPES = {"doc", "table", "source_frame"}
 _TERMINAL_LIFECYCLE_STATES = {"archived", "removed"}
 _RETIRED_ARTIFACT_MARKER = "::retired::"
-_PRESERVE_LAYOUT_ACTIONS = {"update_doc", "update_table", "skip"}
+_PRESERVE_LAYOUT_ACTIONS = {"update_doc", "update_table", "update_source_frame", "skip"}
 _OBJECT_FAMILY_ARTIFACT_CONTENT = "artifact_content"
 _OBJECT_FAMILY_PHASE_ZONE = "phase_zone_scaffolding"
 _OBJECT_FAMILY_STORY_SUMMARY = "story_summary"
 _OBJECT_FAMILY_WORKSTREAM = "workstream_anchor"
+_OBJECT_FAMILY_SOURCE_FRAME = "source_frame"
+_ITEM_HOST_TYPES = {
+    "doc": "shape",
+    "table": "text",
+    "zone": "shape",
+    "workstream_anchor": "shape",
+    "source_frame": "frame",
+}
 _MAX_DOC_HTML_CHARS = 5800
 _OVERSIZE_DOC_FALLBACK_REASON = (
     "Section content exceeded Miro's text-item size limit and was split into sequenced fragments."
@@ -154,6 +163,7 @@ def build_sync_plan(
                 op_id=f"workstream:{phase_zone}:{workstream}",
                 action="ensure_workstream_anchor",
                 item_type="workstream_anchor",
+                artifact_sha256=f"workstream:{phase_zone}:{workstream}",
                 title=WORKSTREAM_TITLES.get(workstream, workstream.title()),
                 phase=_zone_phase(phase_zone),
                 phase_zone=phase_zone,
@@ -174,6 +184,77 @@ def build_sync_plan(
                     zone_rank=phase_zone_rank(phase_zone),
                     workstream_rank=workstream_rank(workstream),
                     object_rank=1,
+                ),
+            )
+        )
+
+    source_groups = _draft_source_groups(ordered_artifacts)
+    for source_group in source_groups:
+        source_frame_strategy = _source_frame_strategy()
+        source_title = _source_group_title(source_group, ordered_artifacts)
+        source_subtitle = _source_group_subtitle(source_group)
+        source_artifact_id = _source_frame_artifact_id(source_group.source_artifact_id)
+        existing_item = manifest.items.get(source_artifact_id)
+        existing_item = existing_item if _is_reusable_existing_item(existing_item) else None
+        reusable_existing_item = _matching_existing_item(existing_item, "source_frame")
+        if reusable_existing_item is not None:
+            handled_manifest_ids.add(reusable_existing_item["artifact_id"])
+        elif existing_item is not None:
+            handled_manifest_ids.add(existing_item["artifact_id"])
+            replacement_operations.append(
+                _build_replacement_operation(
+                    existing_item,
+                    config.removed_item_policy,
+                    strategy=source_frame_strategy,
+                )
+            )
+        action, status = _resolve_content_action(
+            reusable_existing_item,
+            False,
+            source_group.source_sha256,
+            "source_frame",
+        )
+        plan.operations.append(
+            PublishOperation(
+                op_id=f"source_frame:{source_group.source_artifact_id}",
+                action=action,
+                item_type="source_frame",
+                artifact_sha256=source_group.source_sha256,
+                title=source_title,
+                phase=_zone_phase(source_group.phase_zones[0]),
+                phase_zone=source_group.phase_zones[0],
+                workstream=source_group.workstreams[0],
+                collaboration_intent="orientation",
+                artifact_id=source_artifact_id,
+                source_artifact_id=source_group.source_artifact_id,
+                target_key=f"source:{source_group.source_artifact_id}",
+                container_target_key=f"workstream:{source_group.phase_zones[0]}:{source_group.workstreams[0]}",
+                content=source_subtitle,
+                existing_item=reusable_existing_item,
+                layout_policy=_content_layout_policy(action, reusable_existing_item),
+                layout_snapshot=_layout_snapshot(reusable_existing_item)
+                if action in _PRESERVE_LAYOUT_ACTIONS
+                else None,
+                object_family=source_frame_strategy.object_family,
+                preferred_item_type=source_frame_strategy.preferred_item_type,
+                resolved_item_type=source_frame_strategy.resolved_item_type,
+                degraded=source_frame_strategy.degraded,
+                fallback_reason=source_frame_strategy.fallback_reason,
+                degraded_warning=source_frame_strategy.degraded_warning,
+                status=status,
+                lifecycle_state="active",
+                deterministic_order=DeterministicOrder(
+                    zone_rank=phase_zone_rank(source_group.phase_zones[0]),
+                    workstream_rank=workstream_rank(source_group.workstreams[0]),
+                    object_rank=2,
+                    artifact_rank=_artifact_ranks(ordered_artifacts)[
+                        (
+                            source_group.phase_zones[0],
+                            source_group.workstreams[0],
+                            source_group.source_artifact_id,
+                        )
+                    ],
+                    section_rank=0,
                 ),
             )
         )
@@ -204,6 +285,7 @@ def build_sync_plan(
                 op_id=f"{item_type}:{artifact.artifact_id}",
                 action=action,
                 item_type=item_type,
+                artifact_sha256=artifact.sha256,
                 title=artifact.title,
                 phase=artifact.phase,
                 phase_zone=artifact.phase_zone,
@@ -237,7 +319,7 @@ def build_sync_plan(
                 deterministic_order=DeterministicOrder(
                     zone_rank=phase_zone_rank(artifact.phase_zone),
                     workstream_rank=workstream_rank(artifact.workstream),
-                    object_rank=2,
+                    object_rank=3,
                     artifact_rank=artifact_ranks[(artifact.phase_zone, artifact.workstream, artifact.source_artifact_id)],
                     section_rank=section_ranks[(artifact.source_artifact_id, artifact.artifact_id)],
                 ),
@@ -282,6 +364,7 @@ def build_sync_plan(
             )
         )
 
+    plan.source_groups = _build_source_groups(plan.artifacts, plan.operations)
     plan.warnings.extend(_plan_object_strategy_warnings(plan.operations, object_strategies, used_zones=used_zones))
     return plan
 
@@ -289,6 +372,8 @@ def build_sync_plan(
 def _enabled_artifacts(artifacts: list[ArtifactRecord], config: SyncConfig) -> list[ArtifactRecord]:
     enabled: list[ArtifactRecord] = []
     for artifact in artifacts:
+        if artifact.heading_level > config.publish_max_heading_level:
+            continue
         if getattr(config, PHASE_FLAGS.get(artifact.phase, "publish_planning"), True):
             enabled.append(artifact)
     return enabled
@@ -364,9 +449,74 @@ def _section_ranks(artifacts: list[ArtifactRecord]) -> dict[tuple[str, str], int
     return ranks
 
 
+def _build_source_groups(
+    artifacts: list[ArtifactRecord],
+    operations: list[PublishOperation],
+) -> list[SourceGroup]:
+    drafted_groups = _draft_source_groups(artifacts)
+    operations_by_source: dict[str, list[PublishOperation]] = {}
+    for operation in operations:
+        source_artifact_id = operation.source_artifact_id
+        if not source_artifact_id:
+            continue
+        operations_by_source.setdefault(source_artifact_id, []).append(operation)
+
+    source_groups: list[SourceGroup] = []
+    for draft in drafted_groups:
+        source_operations = operations_by_source.get(draft.source_artifact_id, [])
+        source_groups.append(
+            SourceGroup(
+                source_artifact_id=draft.source_artifact_id,
+                relative_path=draft.relative_path,
+                artifact_class=draft.artifact_class,
+                phase_zones=draft.phase_zones,
+                workstreams=draft.workstreams,
+                section_artifact_ids=draft.section_artifact_ids,
+                operation_ids=tuple(operation.op_id for operation in source_operations),
+                source_sha256=draft.source_sha256,
+                pending_operation_count=sum(1 for operation in source_operations if operation.status != "unchanged"),
+            )
+        )
+    return source_groups
+
+
+def _draft_source_groups(artifacts: list[ArtifactRecord]) -> list[SourceGroup]:
+    artifacts_by_source: dict[str, list[ArtifactRecord]] = {}
+    for artifact in artifacts:
+        artifacts_by_source.setdefault(artifact.source_artifact_id, []).append(artifact)
+
+    source_groups: list[SourceGroup] = []
+    for source_artifact_id, source_artifacts in artifacts_by_source.items():
+        first_artifact = source_artifacts[0]
+        source_groups.append(
+            SourceGroup(
+                source_artifact_id=source_artifact_id,
+                relative_path=first_artifact.relative_path,
+                artifact_class=first_artifact.kind,
+                phase_zones=tuple(_ordered_unique([artifact.phase_zone for artifact in source_artifacts])),
+                workstreams=tuple(_ordered_unique([artifact.workstream for artifact in source_artifacts])),
+                section_artifact_ids=tuple(artifact.artifact_id for artifact in source_artifacts),
+                operation_ids=(),
+                source_sha256=_source_sha256_for_artifacts(source_artifacts),
+                pending_operation_count=0,
+            )
+        )
+    return source_groups
+
+
+def _source_sha256_for_artifacts(artifacts: list[ArtifactRecord]) -> str:
+    digest = hashlib.sha256()
+    for artifact in artifacts:
+        digest.update(artifact.artifact_id.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(artifact.sha256.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _has_active_content_items(manifest) -> bool:
     return any(
-        item.get("item_type") in _CONTENT_ITEM_TYPES
+        item.get("item_type") in _MANAGED_ITEM_TYPES
         and item.get("lifecycle_state", "active") not in _TERMINAL_LIFECYCLE_STATES
         for item in manifest.items.values()
     )
@@ -413,6 +563,10 @@ def _matching_existing_item(existing_item: dict | None, item_type: str) -> dict 
         return None
     if existing_item.get("item_type") != item_type:
         return None
+    expected_host = _ITEM_HOST_TYPES.get(item_type)
+    existing_host = existing_item.get("host_item_type")
+    if expected_host and existing_host and expected_host != existing_host:
+        return None
     return existing_item
 
 
@@ -451,7 +605,7 @@ def _sorted_missing_manifest_items(manifest, claimed_manifest_ids: set[str]) -> 
     for artifact_id, item in manifest.items.items():
         if artifact_id in claimed_manifest_ids:
             continue
-        if item.get("item_type") not in _CONTENT_ITEM_TYPES:
+        if item.get("item_type") not in _MANAGED_ITEM_TYPES:
             continue
         if item.get("lifecycle_state", "active") in _TERMINAL_LIFECYCLE_STATES:
             continue
@@ -495,6 +649,7 @@ def _build_replacement_operation(
         op_id=f"{existing_item['item_type']}:{artifact_id}",
         action=action,
         item_type=existing_item["item_type"],
+        artifact_sha256=existing_item.get("artifact_sha256") or existing_item.get("content_fingerprint"),
         title=existing_item.get("title") or existing_item["artifact_id"],
         phase=existing_item.get("phase") or _zone_phase(phase_zone),
         phase_zone=phase_zone,
@@ -756,6 +911,44 @@ def _workstream_strategy() -> ObjectStrategyDecision:
         preferred_item_type="workstream_anchor",
         resolved_item_type="workstream_anchor",
     )
+
+
+def _source_frame_strategy() -> ObjectStrategyDecision:
+    return ObjectStrategyDecision(
+        object_family=_OBJECT_FAMILY_SOURCE_FRAME,
+        preferred_item_type="source_frame",
+        resolved_item_type="source_frame",
+    )
+
+
+def _source_group_title(source_group: SourceGroup, artifacts: list[ArtifactRecord]) -> str:
+    relative_name = Path(source_group.relative_path).stem.strip()
+    title_aliases = {
+        "prd": "PRD",
+        "ux-design-specification": "UX Design Specification",
+        "architecture": "Architecture",
+        "implementation-readiness": "Implementation Readiness",
+        "implementation-handoff": "Implementation Handoff",
+        "decision-records": "Decision Records",
+    }
+    if relative_name in title_aliases:
+        return title_aliases[relative_name]
+    for artifact in artifacts:
+        if artifact.source_artifact_id == source_group.source_artifact_id:
+            if artifact.heading_level <= 1 and artifact.section_title_path:
+                return artifact.section_title_path[-1]
+            return artifact.title
+    return Path(source_group.relative_path).stem.replace("-", " ").replace("_", " ").title()
+
+
+def _source_group_subtitle(source_group: SourceGroup) -> str:
+    noun = "section" if len(source_group.section_artifact_ids) == 1 else "sections"
+    workstream = WORKSTREAM_TITLES.get(source_group.workstreams[0], source_group.workstreams[0].title()) if source_group.workstreams else "General"
+    return f"{workstream} · {len(source_group.section_artifact_ids)} {noun}"
+
+
+def _source_frame_artifact_id(source_artifact_id: str) -> str:
+    return f"source:{source_artifact_id}"
 
 
 def _default_item_strategy(item_type: str) -> ObjectStrategyDecision:

@@ -65,6 +65,76 @@ class CliApplyResultsTests(unittest.TestCase):
             self.assertTrue((root / ".bmad-miro-sync/run/plan.json").exists())
             self.assertFalse((temp_root / ".bmad-miro-sync/run/plan.json").exists())
 
+    def test_source_status_command_outputs_grouped_source_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            root = temp_root / "project"
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text("# PRD\n\nBody\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "bmad_miro_sync",
+                    "source-status",
+                    "--project-root",
+                    str(root),
+                    "--config",
+                    ".bmad-miro.toml",
+                ],
+                cwd=temp_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            source_status = payload["sources"]["_bmad-output/planning-artifacts/prd.md"]
+            self.assertEqual(source_status["status"], "not_published")
+            self.assertEqual(source_status["derived_section_count"], 1)
+
+    def test_source_status_command_writes_repo_local_source_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            root = temp_root / "project"
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text("# PRD\n\nBody\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "bmad_miro_sync",
+                    "source-status",
+                    "--project-root",
+                    str(root),
+                    "--config",
+                    ".bmad-miro.toml",
+                    "--output",
+                    ".bmad-miro-sync/run/source-status.json",
+                ],
+                cwd=temp_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            output_path = root / ".bmad-miro-sync/run/source-status.json"
+            self.assertTrue(output_path.exists())
+            persisted = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertIn("_bmad-output/planning-artifacts/prd.md", persisted["sources"])
+
     def test_export_bundle_resolves_relative_config_and_output_paths_from_project_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_root = Path(tmpdir)
@@ -561,6 +631,7 @@ class _MiroApiTestHandler(BaseHTTPRequestHandler):
                 prefix = "shape" if item_type == "shape" else "text"
                 geometry = item.get("geometry", {})
                 position = item.get("position", {})
+                parent = item.get("parent", {}) if isinstance(item.get("parent"), dict) else {}
                 data.append(
                     {
                         "id": f"{prefix}-{index + 1}",
@@ -574,12 +645,44 @@ class _MiroApiTestHandler(BaseHTTPRequestHandler):
                             "x": position.get("x"),
                             "y": position.get("y"),
                         },
+                        "parent": {
+                            "id": parent.get("id"),
+                        } if parent else None,
                     }
                 )
             self.send_response(201)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"data": data}).encode("utf-8"))
+            return
+
+        if self.path.endswith("/frames"):
+            geometry = payload.get("geometry", {}) if isinstance(payload, dict) else {}
+            position = payload.get("position", {}) if isinstance(payload, dict) else {}
+            data = payload.get("data", {}) if isinstance(payload, dict) else {}
+            self.send_response(201)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "id": "frame-1",
+                        "type": "frame",
+                        "createdAt": "2026-04-23T10:00:00Z",
+                        "geometry": {
+                            "width": geometry.get("width"),
+                            "height": geometry.get("height"),
+                        },
+                        "position": {
+                            "x": position.get("x"),
+                            "y": position.get("y"),
+                        },
+                        "data": {
+                            "title": data.get("title"),
+                        },
+                    }
+                ).encode("utf-8")
+            )
             return
 
         self.send_response(404)
@@ -792,16 +895,20 @@ class CliPublishDirectTests(unittest.TestCase):
                 server.server_close()
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(len(server.calls), 1)
+            self.assertEqual(len(server.calls), 3)
             self.assertEqual(server.calls[0]["path"], "/v2/boards/uXjVGixS6vQ=/items/bulk")
-            self.assertEqual(len(server.calls[0]["body"]), 2)
+            self.assertEqual(server.calls[1]["path"], "/v2/boards/uXjVGixS6vQ=/frames")
+            self.assertEqual(server.calls[2]["path"], "/v2/boards/uXjVGixS6vQ=/items/bulk")
+            self.assertEqual(len(server.calls[0]["body"]), 1)
+            self.assertEqual(len(server.calls[2]["body"]), 1)
             results_payload = json.loads((runtime_dir / "results.json").read_text(encoding="utf-8"))
             self.assertEqual(results_payload["run_status"], "complete")
-            self.assertEqual(len(results_payload["items"]), 2)
+            self.assertEqual(len(results_payload["items"]), 3)
             state = json.loads((root / ".bmad-miro-sync/state.json").read_text(encoding="utf-8"))
             self.assertEqual(state["last_run"]["run_status"], "complete")
-            self.assertEqual(state["items"]["_bmad-output/planning-artifacts/prd.md#prd"]["host_item_type"], "text")
+            self.assertEqual(state["items"]["_bmad-output/planning-artifacts/prd.md#prd"]["host_item_type"], "shape")
             self.assertEqual(state["items"]["workstream:planning:product"]["host_item_type"], "shape")
+            self.assertEqual(state["items"]["source:_bmad-output/planning-artifacts/prd.md"]["host_item_type"], "frame")
 
     def test_publish_direct_uses_repo_local_auth_file_when_env_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -852,11 +959,13 @@ class CliPublishDirectTests(unittest.TestCase):
                 server.server_close()
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(len(server.calls), 1)
+            self.assertEqual(len(server.calls), 3)
             self.assertEqual(
                 server.calls[0]["path"],
                 "/v2/boards/uXjVGixS6vQ=/items/bulk",
             )
+            self.assertEqual(server.calls[1]["path"], "/v2/boards/uXjVGixS6vQ=/frames")
+            self.assertEqual(server.calls[2]["path"], "/v2/boards/uXjVGixS6vQ=/items/bulk")
 
     def test_publish_direct_respects_layout_config_for_colors_positions_and_widths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -920,13 +1029,19 @@ planning = "#123456"
                 server.server_close()
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            bulk_payload = server.calls[0]["body"]
-            self.assertEqual(bulk_payload[0]["position"]["x"], 150.0)
-            self.assertEqual(bulk_payload[0]["position"]["y"], -250.0)
-            self.assertEqual(bulk_payload[0]["style"]["fillColor"], "#123456")
-            self.assertEqual(bulk_payload[1]["position"]["x"], 150.0)
-            self.assertEqual(bulk_payload[1]["position"]["y"], 70.0)
-            self.assertEqual(bulk_payload[1]["geometry"]["width"], 720.0)
+            workstream_payload = server.calls[0]["body"]
+            frame_payload = server.calls[1]["body"]
+            doc_payload = server.calls[2]["body"]
+            self.assertEqual(workstream_payload[0]["position"]["x"], 150.0)
+            self.assertEqual(workstream_payload[0]["position"]["y"], -169.0)
+            self.assertEqual(workstream_payload[0]["style"]["fillColor"], "#d3dffb")
+            self.assertEqual(frame_payload["position"]["x"], 150.0)
+            self.assertEqual(frame_payload["position"]["y"], 105.0)
+            self.assertEqual(frame_payload["geometry"]["width"], 1580.0)
+            self.assertEqual(doc_payload[0]["position"]["x"], 402.0)
+            self.assertEqual(doc_payload[0]["position"]["y"], 196.0)
+            self.assertEqual(doc_payload[0]["geometry"]["width"], 720.0)
+            self.assertEqual(doc_payload[0]["parent"]["id"], "frame-1")
 
     def test_publish_direct_sanitizes_raw_html_and_css_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -937,7 +1052,8 @@ planning = "#123456"
             runtime_dir.mkdir(parents=True)
             (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
             plan = _sample_publish_plan(root)
-            plan["operations"][1]["content"] = (
+            doc_operation = next(operation for operation in plan["operations"] if operation["item_type"] == "doc")
+            doc_operation["content"] = (
                 "# PRD\n\n"
                 "<!DOCTYPE html>\n"
                 "<html>\n"
@@ -987,8 +1103,8 @@ planning = "#123456"
                 server.server_close()
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            bulk_payload = server.calls[0]["body"]
-            content = bulk_payload[1]["data"]["content"]
+            bulk_payload = server.calls[2]["body"]
+            content = bulk_payload[0]["data"]["content"]
             self.assertIn("Visible summary text.", content)
             self.assertIn("Raw HTML/CSS payload omitted from Miro sync", content)
             self.assertIn("Code-heavy block omitted from Miro sync", content)
@@ -1047,6 +1163,204 @@ planning = "#123456"
             self.assertEqual(results_payload["items"][0]["execution_status"], "failed")
             self.assertFalse((root / ".bmad-miro-sync/state.json").exists())
 
+    def test_publish_direct_source_filter_executes_only_selected_source_and_required_scaffold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath, MIRO_API_TOKEN="test-token")
+            runtime_dir = root / ".bmad-miro-sync/run"
+            runtime_dir.mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            plan_path = runtime_dir / "plan.json"
+            plan = _multi_source_publish_plan(root)
+            plan_path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+
+            server = _MiroApiTestServer(("127.0.0.1", 0))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "bmad_miro_sync",
+                        "publish-direct",
+                        "--project-root",
+                        str(root),
+                        "--config",
+                        str(root / ".bmad-miro.toml"),
+                        "--plan",
+                        str(plan_path),
+                        "--results",
+                        ".bmad-miro-sync/run/results.json",
+                        "--api-base-url",
+                        f"http://127.0.0.1:{server.server_port}",
+                        "--source",
+                        "_bmad-output/planning-artifacts/architecture.md",
+                    ],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(server.calls), 1)
+            self.assertEqual(len(server.calls[0]["body"]), 2)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["selection"]["source_artifact_ids"], ["_bmad-output/planning-artifacts/architecture.md"])
+            executed_artifact_ids = {item["artifact_id"] for item in payload["items"]}
+            self.assertIn("_bmad-output/planning-artifacts/architecture.md#architecture", executed_artifact_ids)
+            self.assertNotIn("_bmad-output/planning-artifacts/prd.md#prd", executed_artifact_ids)
+
+    def test_publish_direct_changed_only_skips_already_published_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath, MIRO_API_TOKEN="test-token")
+            runtime_dir = root / ".bmad-miro-sync/run"
+            runtime_dir.mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            plan = _multi_source_publish_plan(root)
+            plan_path = runtime_dir / "plan.json"
+            plan_path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+            (root / ".bmad-miro-sync/state.json").write_text(
+                json.dumps(
+                    {
+                        "version": 3,
+                        "items": {
+                            "_bmad-output/planning-artifacts/prd.md#prd": {
+                                "artifact_id": "_bmad-output/planning-artifacts/prd.md#prd",
+                                "artifact_sha256": "sha-prd",
+                                "content_fingerprint": "sha-prd",
+                                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                                "item_type": "doc",
+                                "title": "PRD",
+                                "phase": "planning",
+                                "phase_zone": "planning",
+                                "workstream": "product",
+                                "collaboration_intent": "anchor",
+                                "target_key": "artifact:_bmad-output/planning-artifacts/prd.md#prd",
+                                "item_id": "item-prd",
+                                "miro_url": "https://miro.com/app/board/uXjVGixS6vQ=/",
+                                "updated_at": "2026-04-27T12:00:00Z",
+                                "execution_status": "created",
+                                "lifecycle_state": "active",
+                            }
+                        },
+                        "operations": {},
+                        "last_run": {},
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            server = _MiroApiTestServer(("127.0.0.1", 0))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "bmad_miro_sync",
+                        "publish-direct",
+                        "--project-root",
+                        str(root),
+                        "--config",
+                        str(root / ".bmad-miro.toml"),
+                        "--plan",
+                        str(plan_path),
+                        "--results",
+                        ".bmad-miro-sync/run/results.json",
+                        "--api-base-url",
+                        f"http://127.0.0.1:{server.server_port}",
+                        "--changed-only",
+                    ],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["selection"]["source_artifact_ids"], ["_bmad-output/planning-artifacts/architecture.md"])
+            executed_artifact_ids = {item["artifact_id"] for item in payload["items"]}
+            self.assertIn("_bmad-output/planning-artifacts/architecture.md#architecture", executed_artifact_ids)
+            self.assertNotIn("_bmad-output/planning-artifacts/prd.md#prd", executed_artifact_ids)
+
+    def test_publish_direct_source_filter_apply_results_keeps_unselected_work_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath, MIRO_API_TOKEN="test-token")
+            runtime_dir = root / ".bmad-miro-sync/run"
+            runtime_dir.mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            plan_path = runtime_dir / "plan.json"
+            plan_path.write_text(json.dumps(_multi_source_publish_plan(root), indent=2) + "\n", encoding="utf-8")
+
+            server = _MiroApiTestServer(("127.0.0.1", 0))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "bmad_miro_sync",
+                        "publish-direct",
+                        "--project-root",
+                        str(root),
+                        "--config",
+                        str(root / ".bmad-miro.toml"),
+                        "--plan",
+                        str(plan_path),
+                        "--results",
+                        ".bmad-miro-sync/run/results.json",
+                        "--api-base-url",
+                        f"http://127.0.0.1:{server.server_port}",
+                        "--source",
+                        "_bmad-output/planning-artifacts/architecture.md",
+                        "--apply-results",
+                    ],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = json.loads((root / ".bmad-miro-sync/state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["last_run"]["run_status"], "partial")
+            self.assertGreater(state["last_run"]["pending_operation_count"], 0)
+            self.assertEqual(
+                state["operations"]["doc:_bmad-output/planning-artifacts/prd.md#prd"]["execution_status"],
+                "pending",
+            )
+            self.assertEqual(
+                state["operations"]["doc:_bmad-output/planning-artifacts/architecture.md#architecture"]["execution_status"],
+                "created",
+            )
+
 
 def _sample_publish_plan(root: Path) -> dict[str, object]:
     artifact_id = "_bmad-output/planning-artifacts/prd.md#prd"
@@ -1083,6 +1397,19 @@ def _sample_publish_plan(root: Path) -> dict[str, object]:
                 "previous_parent_artifact_id": None,
             }
         ],
+        "source_groups": [
+            {
+                "source_artifact_id": source_artifact_id,
+                "relative_path": source_artifact_id,
+                "artifact_class": "prd",
+                "phase_zones": ["planning"],
+                "workstreams": ["product"],
+                "section_artifact_ids": [artifact_id],
+                "operation_ids": [f"source_frame:{source_artifact_id}", f"doc:{artifact_id}"],
+                "source_sha256": "source-sha-prd",
+                "pending_operation_count": 2,
+            }
+        ],
         "operations": [
             {
                 "op_id": "workstream:planning:product",
@@ -1114,6 +1441,39 @@ def _sample_publish_plan(root: Path) -> dict[str, object]:
                 },
             },
             {
+                "op_id": f"source_frame:{source_artifact_id}",
+                "action": "create_source_frame",
+                "item_type": "source_frame",
+                "title": "PRD",
+                "phase": "planning",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "collaboration_intent": "orientation",
+                "artifact_id": f"source:{source_artifact_id}",
+                "source_artifact_id": source_artifact_id,
+                "target_key": f"source:{source_artifact_id}",
+                "artifact_sha256": "source-sha-prd",
+                "container_target_key": "workstream:planning:product",
+                "content": "Prd · 1 section",
+                "object_family": "source_frame",
+                "preferred_item_type": "source_frame",
+                "resolved_item_type": "source_frame",
+                "degraded": False,
+                "fallback_reason": None,
+                "degraded_warning": None,
+                "status": "pending",
+                "lifecycle_state": "active",
+                "heading_level": 0,
+                "parent_artifact_id": None,
+                "deterministic_order": {
+                    "zone_rank": 1,
+                    "workstream_rank": 1,
+                    "object_rank": 2,
+                    "artifact_rank": 1,
+                    "section_rank": 0,
+                },
+            },
+            {
                 "op_id": f"doc:{artifact_id}",
                 "action": "create_doc",
                 "item_type": "doc",
@@ -1140,6 +1500,217 @@ def _sample_publish_plan(root: Path) -> dict[str, object]:
                 "deterministic_order": {
                     "zone_rank": 1,
                     "workstream_rank": 1,
+                    "object_rank": 3,
+                    "artifact_rank": 1,
+                    "section_rank": 1,
+                },
+            },
+        ],
+    }
+
+
+def _multi_source_publish_plan(root: Path) -> dict[str, object]:
+    prd_artifact_id = "_bmad-output/planning-artifacts/prd.md#prd"
+    prd_source_id = "_bmad-output/planning-artifacts/prd.md"
+    architecture_artifact_id = "_bmad-output/planning-artifacts/architecture.md#architecture"
+    architecture_source_id = "_bmad-output/planning-artifacts/architecture.md"
+    return {
+        "board_url": "https://miro.com/app/board/uXjVGixS6vQ=/",
+        "project_root": str(root),
+        "config_path": str(root / ".bmad-miro.toml"),
+        "manifest_path": ".bmad-miro-sync/state.json",
+        "warnings": [],
+        "object_strategies": [],
+        "artifacts": [
+            {
+                "artifact_id": prd_artifact_id,
+                "source_artifact_id": prd_source_id,
+                "title": "PRD",
+                "kind": "prd",
+                "phase": "planning",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "collaboration_intent": "anchor",
+                "relative_path": prd_source_id,
+                "sha256": "sha-prd",
+                "source_type": "file",
+                "heading_level": 1,
+                "parent_artifact_id": None,
+                "section_path": ["prd"],
+                "section_title_path": ["PRD"],
+                "section_slug": "prd",
+                "section_sibling_index": 1,
+                "lineage_key": "prd",
+                "lineage_status": "new",
+                "previous_artifact_id": None,
+                "previous_parent_artifact_id": None,
+            },
+            {
+                "artifact_id": architecture_artifact_id,
+                "source_artifact_id": architecture_source_id,
+                "title": "Architecture",
+                "kind": "architecture",
+                "phase": "planning",
+                "phase_zone": "planning",
+                "workstream": "architecture",
+                "collaboration_intent": "anchor",
+                "relative_path": architecture_source_id,
+                "sha256": "sha-architecture",
+                "source_type": "file",
+                "heading_level": 1,
+                "parent_artifact_id": None,
+                "section_path": ["architecture"],
+                "section_title_path": ["Architecture"],
+                "section_slug": "architecture",
+                "section_sibling_index": 1,
+                "lineage_key": "architecture",
+                "lineage_status": "new",
+                "previous_artifact_id": None,
+                "previous_parent_artifact_id": None,
+            },
+        ],
+        "source_groups": [
+            {
+                "source_artifact_id": prd_source_id,
+                "relative_path": prd_source_id,
+                "artifact_class": "prd",
+                "phase_zones": ["planning"],
+                "workstreams": ["product"],
+                "section_artifact_ids": [prd_artifact_id],
+                "operation_ids": [f"doc:{prd_artifact_id}"],
+                "source_sha256": "source-sha-prd",
+                "pending_operation_count": 1,
+            },
+            {
+                "source_artifact_id": architecture_source_id,
+                "relative_path": architecture_source_id,
+                "artifact_class": "architecture",
+                "phase_zones": ["planning"],
+                "workstreams": ["architecture"],
+                "section_artifact_ids": [architecture_artifact_id],
+                "operation_ids": [f"doc:{architecture_artifact_id}"],
+                "source_sha256": "source-sha-architecture",
+                "pending_operation_count": 1,
+            },
+        ],
+        "operations": [
+            {
+                "op_id": "workstream:planning:product",
+                "action": "ensure_workstream_anchor",
+                "item_type": "workstream_anchor",
+                "title": "Product",
+                "phase": "planning",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "collaboration_intent": "orientation",
+                "artifact_id": "workstream:planning:product",
+                "source_artifact_id": "workstream:planning:product",
+                "target_key": "workstream:planning:product",
+                "container_target_key": None,
+                "object_family": "workstream_anchor",
+                "preferred_item_type": "workstream_anchor",
+                "resolved_item_type": "workstream_anchor",
+                "degraded": False,
+                "fallback_reason": None,
+                "degraded_warning": None,
+                "status": "pending",
+                "lifecycle_state": "active",
+                "deterministic_order": {
+                    "zone_rank": 1,
+                    "workstream_rank": 1,
+                    "object_rank": 1,
+                    "artifact_rank": 0,
+                    "section_rank": 0,
+                },
+            },
+            {
+                "op_id": "workstream:planning:architecture",
+                "action": "ensure_workstream_anchor",
+                "item_type": "workstream_anchor",
+                "title": "Architecture",
+                "phase": "planning",
+                "phase_zone": "planning",
+                "workstream": "architecture",
+                "collaboration_intent": "orientation",
+                "artifact_id": "workstream:planning:architecture",
+                "source_artifact_id": "workstream:planning:architecture",
+                "target_key": "workstream:planning:architecture",
+                "container_target_key": None,
+                "object_family": "workstream_anchor",
+                "preferred_item_type": "workstream_anchor",
+                "resolved_item_type": "workstream_anchor",
+                "degraded": False,
+                "fallback_reason": None,
+                "degraded_warning": None,
+                "status": "pending",
+                "lifecycle_state": "active",
+                "deterministic_order": {
+                    "zone_rank": 1,
+                    "workstream_rank": 3,
+                    "object_rank": 1,
+                    "artifact_rank": 0,
+                    "section_rank": 0,
+                },
+            },
+            {
+                "op_id": f"doc:{prd_artifact_id}",
+                "action": "create_doc",
+                "item_type": "doc",
+                "title": "PRD",
+                "phase": "planning",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "collaboration_intent": "anchor",
+                "artifact_id": prd_artifact_id,
+                "source_artifact_id": prd_source_id,
+                "target_key": f"artifact:{prd_artifact_id}",
+                "container_target_key": "workstream:planning:product",
+                "content": "# PRD\n\nBody\n",
+                "object_family": "artifact_content",
+                "preferred_item_type": "doc",
+                "resolved_item_type": "doc",
+                "degraded": False,
+                "fallback_reason": None,
+                "degraded_warning": None,
+                "status": "pending",
+                "lifecycle_state": "active",
+                "heading_level": 1,
+                "parent_artifact_id": None,
+                "deterministic_order": {
+                    "zone_rank": 1,
+                    "workstream_rank": 1,
+                    "object_rank": 2,
+                    "artifact_rank": 1,
+                    "section_rank": 1,
+                },
+            },
+            {
+                "op_id": f"doc:{architecture_artifact_id}",
+                "action": "create_doc",
+                "item_type": "doc",
+                "title": "Architecture",
+                "phase": "planning",
+                "phase_zone": "planning",
+                "workstream": "architecture",
+                "collaboration_intent": "anchor",
+                "artifact_id": architecture_artifact_id,
+                "source_artifact_id": architecture_source_id,
+                "target_key": f"artifact:{architecture_artifact_id}",
+                "container_target_key": "workstream:planning:architecture",
+                "content": "# Architecture\n\nSystem design\n",
+                "object_family": "artifact_content",
+                "preferred_item_type": "doc",
+                "resolved_item_type": "doc",
+                "degraded": False,
+                "fallback_reason": None,
+                "degraded_warning": None,
+                "status": "pending",
+                "lifecycle_state": "active",
+                "heading_level": 1,
+                "parent_artifact_id": None,
+                "deterministic_order": {
+                    "zone_rank": 1,
+                    "workstream_rank": 3,
                     "object_rank": 2,
                     "artifact_rank": 1,
                     "section_rank": 1,

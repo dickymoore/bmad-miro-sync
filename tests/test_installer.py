@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from bmad_miro_sync.installer import install_project
-from bmad_miro_sync.templates import SYNC_POLICY_BODY, render_config
+from bmad_miro_sync.templates import render_config
 
 
 class InstallerTests(unittest.TestCase):
@@ -17,14 +17,9 @@ class InstallerTests(unittest.TestCase):
             render_config("https://miro.com/app/board/uXjVGixS6vQ=/"),
         )
 
-    def test_install_writes_project_files_and_patches_skills_by_default(self) -> None:
+    def test_install_writes_project_files_and_bmad_customizations_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".agents/skills/bmad-create-prd").mkdir(parents=True)
-            (root / ".agents/skills/bmad-create-prd/SKILL.md").write_text(
-                "---\nname: bmad-create-prd\ndescription: test\n---\n\nFollow the instructions.\n",
-                encoding="utf-8",
-            )
             (root / ".gitignore").write_text(".codex/\n", encoding="utf-8")
 
             result = install_project(
@@ -60,6 +55,11 @@ class InstallerTests(unittest.TestCase):
             self.assertIn("create or confirm a Miro Developer team", auto_sync)
             self.assertIn("setup-miro-rest-auth", auto_sync)
             self.assertIn(".bmad-miro-auth.json", auto_sync)
+            self.assertIn("Which BMAD outputs are up to date and which need syncing?", auto_sync)
+            self.assertIn("source-status", auto_sync)
+            self.assertIn("--changed-only", auto_sync)
+            self.assertIn('--source "_bmad-output/planning-artifacts/prd.md"', auto_sync)
+            self.assertIn("If Playwright MCP is available", auto_sync)
             self.assertNotIn("Only proceed with a partial results file", auto_sync)
             self.assertIn("name: bmad-miro-sync", auto_sync)
             comment_skill = (root / ".agents/skills/bmad-miro-ingest/SKILL.md").read_text(encoding="utf-8")
@@ -80,15 +80,22 @@ class InstallerTests(unittest.TestCase):
             self.assertIn("publish-direct", collaboration_skill)
             self.assertIn("Smaller runs may still complete through Codex Miro MCP alone", collaboration_skill)
             self.assertIn("setup-miro-rest-auth", collaboration_skill)
-            self.assertIn(root / ".agents/skills/bmad-create-prd/SKILL.md", result.patched_skills)
-            patched = (root / ".agents/skills/bmad-create-prd/SKILL.md").read_text(encoding="utf-8")
-            self.assertIn("## BMad Miro Sync Policy", patched)
+            self.assertEqual(result.patched_skills, [])
+            customization = root / "_bmad/custom/bmad-create-prd.toml"
+            self.assertIn(customization, result.bmad_customizations)
+            customization_text = customization.read_text(encoding="utf-8")
+            self.assertIn("[workflow]", customization_text)
+            self.assertIn("bmad-miro-sync", customization_text)
+            self.assertIn("bmad-miro-collaboration", customization_text)
             doc_text = (root / "docs/miro-sync.md").read_text(encoding="utf-8")
             self.assertIn("Run The Miro Collaboration Workflow", doc_text)
             self.assertIn("bmad-miro-collaboration", doc_text)
             self.assertIn("bmad-miro-sync", doc_text)
             self.assertIn("bmad-miro-ingest", doc_text)
+            self.assertIn("_bmad/custom/", doc_text)
             self.assertIn("publish-direct", doc_text)
+            self.assertIn("Playwright MCP", doc_text)
+            self.assertIn("@playwright/mcp@latest", doc_text)
             self.assertIn("Smaller runs may still complete through Codex Miro MCP alone", doc_text)
             self.assertIn("create or confirm a Miro Developer team", doc_text)
             self.assertIn("setup-miro-rest-auth", doc_text)
@@ -121,13 +128,6 @@ class InstallerTests(unittest.TestCase):
     def test_install_can_skip_bmad_skill_patching(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".agents/skills/bmad-create-prd").mkdir(parents=True)
-            skill = root / ".agents/skills/bmad-create-prd/SKILL.md"
-            skill.write_text(
-                "---\nname: bmad-create-prd\ndescription: test\n---\n\nFollow the instructions.\n",
-                encoding="utf-8",
-            )
-
             result = install_project(
                 root,
                 "https://miro.com/app/board/uXjVGixS6vQ=/",
@@ -135,9 +135,10 @@ class InstallerTests(unittest.TestCase):
                 patch_bmad_skills=False,
             )
 
+            self.assertEqual(result.bmad_customizations, [])
             self.assertEqual(result.patched_skills, [])
             self.assertEqual(result.backup_files, [])
-            self.assertNotIn("## BMad Miro Sync Policy", skill.read_text(encoding="utf-8"))
+            self.assertFalse((root / "_bmad/custom/bmad-create-prd.toml").exists())
 
     def test_install_backs_up_changed_config_before_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -164,18 +165,9 @@ class InstallerTests(unittest.TestCase):
             )
             self.assertIn('uXjVGixS6vQ', config_path.read_text(encoding="utf-8"))
 
-    def test_install_does_not_duplicate_equivalent_project_sync_policy(self) -> None:
+    def test_install_writes_bmad_team_override_without_needing_skill_patch_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".agents/skills/bmad-create-prd").mkdir(parents=True)
-            skill = root / ".agents/skills/bmad-create-prd/SKILL.md"
-            skill.write_text(
-                "---\nname: bmad-create-prd\ndescription: test\n---\n\n"
-                "## FluidScan Sync Policy\n\n"
-                f"{SYNC_POLICY_BODY}\n\n"
-                "Follow the instructions.\n",
-                encoding="utf-8",
-            )
 
             result = install_project(
                 root,
@@ -184,25 +176,16 @@ class InstallerTests(unittest.TestCase):
             )
 
             self.assertEqual(result.patched_skills, [])
-            updated = skill.read_text(encoding="utf-8")
-            self.assertIn("## FluidScan Sync Policy", updated)
-            self.assertNotIn("## BMad Miro Sync Policy", updated)
-            self.assertEqual(updated.count(SYNC_POLICY_BODY), 1)
+            override = (root / "_bmad/custom/bmad-create-prd.toml").read_text(encoding="utf-8")
+            self.assertIn("on_complete", override)
+            self.assertIn("bmad-miro-sync", override)
 
-    def test_install_dedupes_existing_matching_sync_policies(self) -> None:
+    def test_install_overwrites_bmad_team_override_with_current_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / ".agents/skills/bmad-create-prd").mkdir(parents=True)
-            skill = root / ".agents/skills/bmad-create-prd/SKILL.md"
-            skill.write_text(
-                "---\nname: bmad-create-prd\ndescription: test\n---\n\n"
-                "## BMad Miro Sync Policy\n\n"
-                f"{SYNC_POLICY_BODY}\n\n"
-                "## FluidScan Sync Policy\n\n"
-                f"{SYNC_POLICY_BODY}\n\n"
-                "Follow the instructions.\n",
-                encoding="utf-8",
-            )
+            override_path = root / "_bmad/custom/bmad-create-prd.toml"
+            override_path.parent.mkdir(parents=True, exist_ok=True)
+            override_path.write_text("[workflow]\non_complete = \"old\"\n", encoding="utf-8")
 
             result = install_project(
                 root,
@@ -210,9 +193,10 @@ class InstallerTests(unittest.TestCase):
                 sync_src="/tmp/bmad-miro-sync/src",
             )
 
-            self.assertIn(skill, result.patched_skills)
-            updated = skill.read_text(encoding="utf-8")
-            self.assertEqual(updated.count(SYNC_POLICY_BODY), 1)
+            self.assertIn(override_path, result.bmad_customizations)
+            updated = override_path.read_text(encoding="utf-8")
+            self.assertIn("bmad-miro-sync", updated)
+            self.assertNotIn('on_complete = "old"', updated)
 
 
 if __name__ == "__main__":
