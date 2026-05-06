@@ -181,7 +181,11 @@ class PlannerTests(unittest.TestCase):
             config = load_config(root / ".bmad-miro.toml")
             plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
 
-            doc_operations = [operation.artifact_id for operation in plan.operations if operation.item_type == "doc"]
+            doc_operations = [
+                operation.artifact_id
+                for operation in plan.operations
+                if operation.item_type == "doc" and not operation.artifact_id.startswith("source_header:")
+            ]
             self.assertEqual(
                 doc_operations,
                 [
@@ -194,10 +198,66 @@ class PlannerTests(unittest.TestCase):
                 [
                     operation.deterministic_order.section_rank
                     for operation in plan.operations
-                    if operation.item_type == "doc"
+                    if operation.item_type == "doc" and not operation.artifact_id.startswith("source_header:")
                 ],
                 [0, 1, 2],
             )
+
+    def test_metadata_only_parent_docs_receive_summary_fallback_from_child_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text(
+                "---\nworkflow_completed: true\n---\n\n# Product Requirements Document - fluidscan\n\n**Author:** Codexuser\n**Date:** 2026-04-17\n\n## Executive Summary\n\nFluidScan is a web application for readers who accumulate worthwhile long-form articles.\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(root / ".bmad-miro.toml")
+            plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
+
+            overview = next(
+                operation for operation in plan.operations if operation.artifact_id == "_bmad-output/planning-artifacts/prd.md#overview"
+            )
+            summary = next(
+                operation
+                for operation in plan.operations
+                if operation.artifact_id == "_bmad-output/planning-artifacts/prd.md#product-requirements-document-fluidscan"
+            )
+
+            self.assertIn("FluidScan is a web application", overview.summary_fallback_content or "")
+            self.assertIn("FluidScan is a web application", summary.summary_fallback_content or "")
+
+    def test_root_level_sparse_cards_use_distinct_fallback_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text(
+                "---\nworkflow_completed: true\n---\n\n"
+                "# Product Requirements Document - fluidscan\n\n"
+                "**Author:** Codexuser\n**Date:** 2026-04-17\n\n"
+                "## Executive Summary\n\n"
+                "FluidScan is a web application for readers who accumulate worthwhile long-form articles.\n\n"
+                "## Project Classification\n\n"
+                "FluidScan is classified as a web app in the general software domain.\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(root / ".bmad-miro.toml")
+            plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
+
+            overview = next(
+                operation for operation in plan.operations if operation.artifact_id == "_bmad-output/planning-artifacts/prd.md#overview"
+            )
+            summary = next(
+                operation
+                for operation in plan.operations
+                if operation.artifact_id == "_bmad-output/planning-artifacts/prd.md#product-requirements-document-fluidscan"
+            )
+
+            self.assertIn("FluidScan is a web application for readers", overview.summary_fallback_content or "")
+            self.assertIn("FluidScan is classified as a web app", summary.summary_fallback_content or "")
 
     def test_existing_manifest_skips_unchanged_docs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -235,8 +295,130 @@ class PlannerTests(unittest.TestCase):
             save_manifest(root, config.manifest_path, manifest)
 
             second_plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
-            doc_actions = [op.action for op in second_plan.operations if op.item_type == "doc"]
+            doc_actions = [
+                op.action
+                for op in second_plan.operations
+                if op.item_type == "doc" and not op.artifact_id.startswith("source_header:")
+            ]
             self.assertEqual(doc_actions, ["skip"])
+
+    def test_existing_manifest_reflows_unchanged_source_frames(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            doc_path = root / "_bmad-output/planning-artifacts/prd.md"
+            doc_path.write_text("# PRD\n\nBody\n", encoding="utf-8")
+
+            config = load_config(root / ".bmad-miro.toml")
+            first_plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
+            source_frame = next(operation for operation in first_plan.operations if operation.item_type == "source_frame")
+
+            manifest = apply_results(
+                load_manifest(root, config.manifest_path),
+                {
+                    "items": [
+                        {
+                            "artifact_id": source_frame.artifact_id,
+                            "artifact_sha256": source_frame.artifact_sha256,
+                            "item_type": "source_frame",
+                            "item_id": "frame-123",
+                            "miro_url": "https://miro.com/app/board/x/?moveToWidget=frame-123",
+                            "title": source_frame.title,
+                            "target_key": source_frame.target_key,
+                            "source_artifact_id": source_frame.source_artifact_id,
+                            "phase_zone": source_frame.phase_zone,
+                            "workstream": source_frame.workstream,
+                            "collaboration_intent": source_frame.collaboration_intent,
+                            "container_target_key": source_frame.container_target_key,
+                            "heading_level": source_frame.heading_level,
+                            "parent_artifact_id": source_frame.parent_artifact_id,
+                            "updated_at": "2026-04-14T15:00:00Z",
+                            "layout_snapshot": {"x": -1200.0, "y": 0.0, "width": 1100.0, "height": 1800.0},
+                        }
+                    ]
+                },
+            )
+            save_manifest(root, config.manifest_path, manifest)
+
+            second_plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
+            replanned_frame = next(operation for operation in second_plan.operations if operation.item_type == "source_frame")
+
+            self.assertEqual(replanned_frame.action, "update_source_frame")
+            self.assertIsNone(replanned_frame.layout_policy)
+            self.assertIsNone(replanned_frame.layout_snapshot)
+
+    def test_reflowing_source_frame_promotes_child_docs_to_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            doc_path = root / "_bmad-output/planning-artifacts/prd.md"
+            doc_path.write_text("# PRD\n\nBody\n", encoding="utf-8")
+
+            config = load_config(root / ".bmad-miro.toml")
+            first_plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
+            source_frame = next(operation for operation in first_plan.operations if operation.item_type == "source_frame")
+            doc_operation = next(
+                operation
+                for operation in first_plan.operations
+                if operation.item_type == "doc" and not operation.artifact_id.startswith("source_header:")
+            )
+
+            manifest = apply_results(
+                load_manifest(root, config.manifest_path),
+                {
+                    "items": [
+                        {
+                            "artifact_id": source_frame.artifact_id,
+                            "artifact_sha256": source_frame.artifact_sha256,
+                            "item_type": "source_frame",
+                            "item_id": "frame-123",
+                            "miro_url": "https://miro.com/app/board/x/?moveToWidget=frame-123",
+                            "title": source_frame.title,
+                            "target_key": source_frame.target_key,
+                            "source_artifact_id": source_frame.source_artifact_id,
+                            "phase_zone": source_frame.phase_zone,
+                            "workstream": source_frame.workstream,
+                            "collaboration_intent": source_frame.collaboration_intent,
+                            "container_target_key": source_frame.container_target_key,
+                            "heading_level": source_frame.heading_level,
+                            "parent_artifact_id": source_frame.parent_artifact_id,
+                            "updated_at": "2026-04-14T15:00:00Z",
+                            "layout_snapshot": {"x": -1200.0, "y": 0.0, "width": 1100.0, "height": 1800.0},
+                        },
+                        {
+                            "artifact_id": doc_operation.artifact_id,
+                            "artifact_sha256": doc_operation.artifact_sha256,
+                            "item_type": "doc",
+                            "item_id": "doc-123",
+                            "miro_url": "https://miro.com/app/board/x/?moveToWidget=doc-123",
+                            "title": doc_operation.title,
+                            "target_key": doc_operation.target_key,
+                            "source_artifact_id": doc_operation.source_artifact_id,
+                            "phase_zone": doc_operation.phase_zone,
+                            "workstream": doc_operation.workstream,
+                            "collaboration_intent": doc_operation.collaboration_intent,
+                            "container_target_key": doc_operation.container_target_key,
+                            "heading_level": doc_operation.heading_level,
+                            "parent_artifact_id": doc_operation.parent_artifact_id,
+                            "updated_at": "2026-04-14T15:00:00Z",
+                        },
+                    ]
+                },
+            )
+            save_manifest(root, config.manifest_path, manifest)
+
+            second_plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
+            replanned_doc = next(
+                operation
+                for operation in second_plan.operations
+                if operation.item_type == "doc" and operation.artifact_id == doc_operation.artifact_id
+            )
+
+            self.assertEqual(replanned_doc.action, "update_doc")
+            self.assertIsNone(replanned_doc.layout_policy)
+            self.assertIsNone(replanned_doc.layout_snapshot)
 
     def test_changed_content_updates_existing_doc_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

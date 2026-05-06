@@ -22,6 +22,8 @@ _RETRY_STATUSES = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 5
 _CODE_BLOCK_SUMMARY = "[Code-heavy block omitted from Miro sync; see the source artifact for full details.]"
 _HTML_PAYLOAD_SUMMARY = "[Raw HTML/CSS payload omitted from Miro sync; see the source artifact for full details.]"
+_SUMMARY_PLACEHOLDERS = frozenset({_CODE_BLOCK_SUMMARY, _HTML_PAYLOAD_SUMMARY})
+_FRAME_HIDDEN_TITLE = "\u2800"
 _HOST_ITEM_TYPES = {
     "doc": "shape",
     "table": "text",
@@ -76,6 +78,7 @@ def execute_publish_plan(
     layout: LayoutConfig | None = None,
     api_base_url: str = DEFAULT_API_BASE_URL,
     stop_on_error: bool = True,
+    apply_layout: bool = True,
 ) -> dict[str, Any]:
     resolved_layout = layout or LayoutConfig()
     board_url = _require_str(plan.get("board_url"), "plan.board_url")
@@ -85,10 +88,8 @@ def execute_publish_plan(
     executed_items: list[dict[str, Any]] = []
     successful_count = 0
     warnings = list(plan.get("warnings", [])) if isinstance(plan.get("warnings"), list) else []
-    operations = _apply_layout_positions(
-        [operation for operation in plan.get("operations", []) if isinstance(operation, dict)],
-        resolved_layout,
-    )
+    raw_operations = [operation for operation in plan.get("operations", []) if isinstance(operation, dict)]
+    operations = _apply_layout_positions(raw_operations, resolved_layout) if apply_layout else raw_operations
     create_ops: list[dict[str, Any]] = []
     item_id_by_artifact = _existing_item_ids_by_artifact(operations)
 
@@ -368,15 +369,33 @@ def _execute_single_operation(
     if action.startswith("update_"):
         item_id = _require_str(existing_item.get("item_id"), f"{action} existing_item.item_id")
         payload = _update_payload_for_operation(operation, layout=layout, item_id_by_artifact=item_id_by_artifact)
-        if host_item_type == "text":
-            response = client.update_text(board_id, item_id, payload)
-        elif host_item_type == "shape":
-            response = client.update_shape(board_id, item_id, payload)
-        elif host_item_type == "frame":
-            response = client.update_frame(board_id, item_id, payload)
-        else:
-            raise MiroApiError(f"Unsupported host item type for update: {host_item_type}")
-        return _result_entry_from_response(operation, artifact, response, board_url=board_url, execution_status="updated")
+        try:
+            if host_item_type == "text":
+                response = client.update_text(board_id, item_id, payload)
+            elif host_item_type == "shape":
+                response = client.update_shape(board_id, item_id, payload)
+            elif host_item_type == "frame":
+                response = client.update_frame(board_id, item_id, payload)
+            else:
+                raise MiroApiError(f"Unsupported host item type for update: {host_item_type}")
+            return _result_entry_from_response(operation, artifact, response, board_url=board_url, execution_status="updated")
+        except MiroApiError as exc:
+            if not _is_missing_item_error(exc):
+                raise
+            create_payload = _single_create_payload_for_operation(
+                operation,
+                layout=layout,
+                item_id_by_artifact=item_id_by_artifact,
+            )
+            if host_item_type == "text":
+                response = client.create_text(board_id, create_payload)
+            elif host_item_type == "shape":
+                response = client.create_shape(board_id, create_payload)
+            elif host_item_type == "frame":
+                response = client.create_frame(board_id, create_payload)
+            else:
+                raise MiroApiError(f"Unsupported host item type for recreate: {host_item_type}") from exc
+            return _result_entry_from_response(operation, artifact, response, board_url=board_url, execution_status="recreated")
 
     if action.startswith(("archive_", "remove_")):
         item_id = _require_str(existing_item.get("item_id"), f"{action} existing_item.item_id")
@@ -390,7 +409,11 @@ def _execute_single_operation(
         )
 
     if action.startswith(("create_", "ensure_")):
-        payload = _create_payload_for_operation(operation, layout=layout, item_id_by_artifact=item_id_by_artifact)
+        payload = _single_create_payload_for_operation(
+            operation,
+            layout=layout,
+            item_id_by_artifact=item_id_by_artifact,
+        )
         if host_item_type == "text":
             response = client.create_text(board_id, payload)
         elif host_item_type == "shape":
@@ -456,6 +479,21 @@ def _create_payload_for_operation(
     raise MiroApiError(f"Unsupported host item type for create payload: {host_item_type}")
 
 
+def _single_create_payload_for_operation(
+    operation: dict[str, Any],
+    *,
+    layout: LayoutConfig,
+    item_id_by_artifact: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    payload = _create_payload_for_operation(
+        operation,
+        layout=layout,
+        item_id_by_artifact=item_id_by_artifact,
+    )
+    payload.pop("type", None)
+    return payload
+
+
 def _update_payload_for_operation(
     operation: dict[str, Any],
     *,
@@ -519,6 +557,11 @@ def _build_run_results(
     return payload
 
 
+def _is_missing_item_error(exc: MiroApiError) -> bool:
+    message = str(exc)
+    return "failed with 404" in message or "\"status\" : 404" in message or "Item not found" in message
+
+
 def _result_entry_from_response(
     operation: dict[str, Any],
     artifact: dict[str, Any] | None,
@@ -533,6 +576,8 @@ def _result_entry_from_response(
     geometry = response_item.get("geometry") if isinstance(response_item.get("geometry"), dict) else {}
     parent = response_item.get("parent") if isinstance(response_item.get("parent"), dict) else {}
     links = response_item.get("links") if isinstance(response_item.get("links"), dict) else {}
+    planned_position = operation.get("planned_position") if isinstance(operation.get("planned_position"), dict) else {}
+    planned_geometry = operation.get("planned_geometry") if isinstance(operation.get("planned_geometry"), dict) else {}
     return {
         "op_id": operation.get("op_id"),
         "artifact_id": operation.get("artifact_id"),
@@ -550,10 +595,10 @@ def _result_entry_from_response(
         "container_target_key": operation.get("container_target_key"),
         "layout_policy": operation.get("layout_policy"),
         "layout_snapshot": {
-            "x": position.get("x"),
-            "y": position.get("y"),
-            "width": geometry.get("width"),
-            "height": geometry.get("height"),
+            "x": planned_position.get("x", position.get("x")),
+            "y": planned_position.get("y", position.get("y")),
+            "width": planned_geometry.get("width", geometry.get("width")),
+            "height": planned_geometry.get("height", geometry.get("height")),
             "parent_item_id": parent.get("id"),
             "group_id": None,
         },
@@ -770,7 +815,7 @@ def _planned_position(operation: dict[str, Any], *, layout: LayoutConfig, index:
     base_y = layout.phase_y.get(phase, 0.0)
     action = operation.get("action")
     if action == "ensure_zone":
-        return 0.0, base_y
+        return _zone_label_x(layout), base_y
     if action == "ensure_workstream_anchor":
         return base_x, base_y + (layout.zone_height / 2.0) + 26.0
     artifact_index = _deterministic_index(operation)
@@ -809,7 +854,7 @@ def _initialize_source_frame_meta(
     top_y = (
         float(existing_snapshot.get("y")) - (float(existing_snapshot.get("height")) / 2.0)
         if preserve_layout and existing_snapshot.get("y") is not None and existing_snapshot.get("height") is not None
-        else lane_start_y
+        else lane_start_y + _source_frame_title_clearance(layout)
     )
     return {
         "operation_index": -1,
@@ -839,11 +884,19 @@ def _source_frame_padding_x(layout: LayoutConfig) -> float:
 
 
 def _source_frame_top_padding(layout: LayoutConfig) -> float:
-    return max(64.0, min(layout.source_header_height, 104.0))
+    return max(40.0, min(layout.source_header_height * 0.4, 64.0))
 
 
 def _source_frame_bottom_padding(layout: LayoutConfig) -> float:
     return max(40.0, layout.content_gap_y * 0.5)
+
+
+def _source_frame_title_clearance(layout: LayoutConfig) -> float:
+    return 112.0
+
+
+def _source_header_height(layout: LayoutConfig) -> float:
+    return max(88.0, min(layout.source_header_height * 0.8, 116.0))
 
 
 def _existing_item_ids_by_artifact(operations: list[dict[str, Any]]) -> dict[str, str]:
@@ -869,6 +922,17 @@ def _source_frame_artifact_id(source_artifact_id: str) -> str:
     return f"source:{source_artifact_id}"
 
 
+def _is_source_header_card(operation: dict[str, Any]) -> bool:
+    artifact_id = operation.get("artifact_id")
+    return isinstance(artifact_id, str) and artifact_id.startswith("source_header:")
+
+
+def _is_major_doc_card(operation: dict[str, Any]) -> bool:
+    if operation.get("item_type") != "doc" or _is_source_header_card(operation):
+        return False
+    return int(operation.get("heading_level") or 0) <= 1
+
+
 def _parent_payload(operation: dict[str, Any], item_id_by_artifact: dict[str, str] | None) -> dict[str, Any] | None:
     if not item_id_by_artifact:
         return None
@@ -883,6 +947,8 @@ def _parent_payload(operation: dict[str, Any], item_id_by_artifact: dict[str, st
 def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConfig) -> list[dict[str, Any]]:
     lane_y: dict[tuple[str, str], float] = {}
     source_frames: dict[tuple[str, str, str], dict[str, Any]] = {}
+    source_frame_indices: dict[tuple[str, str, str], int] = {}
+    source_header_indices: dict[tuple[str, str, str], int] = {}
     planned_operations: list[dict[str, Any]] = []
 
     for operation in operations:
@@ -890,7 +956,7 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
         action = str(planned.get("action") or "")
         phase_zone = str(planned.get("phase_zone") or "planning")
         workstream = str(planned.get("workstream") or "general")
-        phase_y = layout.phase_y.get(phase_zone, 0.0)
+        phase_y = 0.0
         workstream_x = layout.workstream_x.get(workstream, 0.0)
         lane_key = (phase_zone, workstream)
         source_key = (phase_zone, workstream, str(planned.get("source_artifact_id") or planned.get("artifact_id") or ""))
@@ -902,19 +968,12 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
             planned["planned_position"] = {"x": workstream_x, "y": anchor_y}
             lane_y[lane_key] = anchor_y + (layout.workstream_header_height / 2.0) + 56.0
         elif planned.get("item_type") == "source_frame":
-            frame_meta = _initialize_source_frame_meta(
-                planned,
-                lane_y=lane_y,
-                lane_key=lane_key,
-                phase_y=phase_y,
-                workstream_x=workstream_x,
-                layout=layout,
-            )
-            frame_meta["operation_index"] = len(planned_operations)
-            source_frames[source_key] = frame_meta
-            planned["planned_position"] = frame_meta["position"]
-            planned["planned_geometry"] = frame_meta["geometry"]
-        elif action.startswith(("create_", "ensure_")) and planned.get("item_type") in {"doc", "table"}:
+            source_frame_indices[source_key] = len(planned_operations)
+        elif action.startswith(("create_", "ensure_", "update_")) and planned.get("item_type") in {"doc", "table"}:
+            if _is_source_header_card(planned):
+                source_header_indices[source_key] = len(planned_operations)
+                planned_operations.append(planned)
+                continue
             frame_meta = source_frames.get(source_key)
             if frame_meta is None:
                 frame_meta = _initialize_source_frame_meta(
@@ -925,7 +984,18 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
                     workstream_x=workstream_x,
                     layout=layout,
                 )
+                frame_meta["operation_index"] = source_frame_indices.get(source_key, -1)
                 source_frames[source_key] = frame_meta
+                _apply_pending_source_header(
+                    planned_operations,
+                    operation_index=source_header_indices.get(source_key),
+                    frame_meta=frame_meta,
+                    layout=layout,
+                )
+                planned_frame = planned_operations[frame_meta["operation_index"]] if frame_meta["operation_index"] >= 0 else None
+                if planned_frame is not None:
+                    planned_frame["planned_geometry"] = frame_meta["geometry"]
+                    planned_frame["planned_position"] = frame_meta["position"]
             column_index = min(range(len(frame_meta["column_positions"])), key=lambda idx: frame_meta["column_positions"][idx])
             current_y = frame_meta["column_positions"][column_index]
             current_x = _content_column_x(
@@ -949,13 +1019,152 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
             )
             frame_meta["geometry"] = _finalize_source_frame_geometry(frame_meta, layout=layout)
             frame_meta["position"]["y"] = frame_meta["top_y"] + (frame_meta["geometry"]["height"] / 2.0)
-            planned_frame = planned_operations[frame_meta["operation_index"]]
-            planned_frame["planned_geometry"] = frame_meta["geometry"]
-            planned_frame["planned_position"] = frame_meta["position"]
+            planned_frame = planned_operations[frame_meta["operation_index"]] if frame_meta["operation_index"] >= 0 else None
+            if planned_frame is not None:
+                planned_frame["planned_geometry"] = frame_meta["geometry"]
+                planned_frame["planned_position"] = frame_meta["position"]
             lane_y[lane_key] = frame_meta["position"]["y"] + (frame_meta["geometry"]["height"] / 2.0) + layout.source_gap_y
         planned_operations.append(planned)
 
-    return planned_operations
+    for source_key, operation_index in source_frame_indices.items():
+        if source_key in source_frames:
+            continue
+        phase_zone, workstream, _ = source_key
+        phase_y = 0.0
+        workstream_x = layout.workstream_x.get(workstream, 0.0)
+        lane_key = (phase_zone, workstream)
+        planned = planned_operations[operation_index]
+        frame_meta = _initialize_source_frame_meta(
+            planned,
+            lane_y=lane_y,
+            lane_key=lane_key,
+            phase_y=phase_y,
+            workstream_x=workstream_x,
+            layout=layout,
+        )
+        frame_meta["operation_index"] = operation_index
+        source_frames[source_key] = frame_meta
+        _apply_pending_source_header(
+            planned_operations,
+            operation_index=source_header_indices.get(source_key),
+            frame_meta=frame_meta,
+            layout=layout,
+        )
+        planned["planned_geometry"] = frame_meta["geometry"]
+        planned["planned_position"] = frame_meta["position"]
+        lane_y[lane_key] = frame_meta["position"]["y"] + (frame_meta["geometry"]["height"] / 2.0) + layout.source_gap_y
+
+    return _stack_phase_positions(planned_operations, layout=layout)
+
+
+def _zone_label_x(layout: LayoutConfig) -> float:
+    leftmost_lane_x = min(layout.workstream_x.values(), default=0.0)
+    return leftmost_lane_x - (layout.zone_width / 2.0) - 220.0
+
+
+def _apply_pending_source_header(
+    planned_operations: list[dict[str, Any]],
+    *,
+    operation_index: int | None,
+    frame_meta: dict[str, Any],
+    layout: LayoutConfig,
+) -> None:
+    if operation_index is None or operation_index < 0:
+        return
+    planned = planned_operations[operation_index]
+    if not _is_source_header_card(planned):
+        return
+    if planned.get("planned_position") is not None:
+        return
+    header_height = _source_header_height(layout)
+    current_y = frame_meta["top_padding"] + (header_height / 2.0)
+    current_x = frame_meta["padding_x"] + (_source_group_width(layout) / 2.0)
+    planned["planned_position"] = {"x": current_x, "y": current_y}
+    planned["planned_parent_artifact_id"] = _source_frame_artifact_id(str(planned.get("source_artifact_id") or ""))
+    planned["planned_geometry"] = {"width": _source_group_width(layout), "height": header_height}
+    next_y = current_y + (header_height / 2.0) + layout.content_gap_y
+    frame_meta["column_positions"] = [max(position, next_y) for position in frame_meta["column_positions"]]
+    frame_meta["max_bottom"] = max(frame_meta["max_bottom"], current_y + (header_height / 2.0))
+    frame_meta["max_right"] = max(
+        frame_meta["max_right"],
+        current_x + (_source_group_width(layout) / 2.0),
+    )
+    frame_meta["geometry"] = _finalize_source_frame_geometry(frame_meta, layout=layout)
+    frame_meta["position"]["y"] = frame_meta["top_y"] + (frame_meta["geometry"]["height"] / 2.0)
+
+
+def _stack_phase_positions(operations: list[dict[str, Any]], *, layout: LayoutConfig) -> list[dict[str, Any]]:
+    phase_order = _ordered_phase_sequence(operations)
+    if not phase_order:
+        return operations
+
+    phase_extents = _phase_extents(operations, layout=layout)
+    phase_offsets: dict[str, float] = {}
+
+    first_phase = phase_order[0]
+    phase_offsets[first_phase] = layout.phase_y.get(first_phase, 0.0)
+
+    for previous_phase, phase_zone in zip(phase_order, phase_order[1:]):
+        previous_offset = phase_offsets[previous_phase]
+        previous_extent = phase_extents.get(previous_phase, {"max_y": 0.0})
+        current_extent = phase_extents.get(phase_zone, {"min_y": 0.0})
+        previous_bottom = previous_offset + float(previous_extent["max_y"])
+        current_top = float(current_extent["min_y"])
+        phase_offsets[phase_zone] = previous_bottom + layout.phase_gap_y - current_top
+
+    shifted_operations: list[dict[str, Any]] = []
+    for operation in operations:
+        shifted = dict(operation)
+        planned_position = shifted.get("planned_position")
+        if (
+            isinstance(planned_position, dict)
+            and planned_position.get("y") is not None
+            and _is_top_level_operation(shifted)
+        ):
+            phase_zone = str(shifted.get("phase_zone") or "planning")
+            shifted["planned_position"] = {
+                **planned_position,
+                "y": float(planned_position["y"]) + phase_offsets.get(phase_zone, 0.0),
+            }
+        shifted_operations.append(shifted)
+    return shifted_operations
+
+
+def _ordered_phase_sequence(operations: list[dict[str, Any]]) -> list[str]:
+    phase_order: list[str] = []
+    for operation in operations:
+        phase_zone = str(operation.get("phase_zone") or "planning")
+        if phase_zone not in phase_order:
+            phase_order.append(phase_zone)
+    return phase_order
+
+
+def _phase_extents(operations: list[dict[str, Any]], *, layout: LayoutConfig) -> dict[str, dict[str, float]]:
+    extents: dict[str, dict[str, float]] = {}
+    for operation in operations:
+        if not _is_top_level_operation(operation):
+            continue
+        planned_position = operation.get("planned_position")
+        if not isinstance(planned_position, dict):
+            continue
+        if planned_position.get("y") is None:
+            continue
+        geometry = _shape_geometry(operation, layout=layout)
+        half_height = float(geometry["height"]) / 2.0
+        top = float(planned_position["y"]) - half_height
+        bottom = float(planned_position["y"]) + half_height
+        phase_zone = str(operation.get("phase_zone") or "planning")
+        if phase_zone not in extents:
+            extents[phase_zone] = {"min_y": top, "max_y": bottom}
+            continue
+        extents[phase_zone]["min_y"] = min(float(extents[phase_zone]["min_y"]), top)
+        extents[phase_zone]["max_y"] = max(float(extents[phase_zone]["max_y"]), bottom)
+    return extents
+
+
+def _is_top_level_operation(operation: dict[str, Any]) -> bool:
+    planned_parent_artifact_id = operation.get("planned_parent_artifact_id")
+    return not (isinstance(planned_parent_artifact_id, str) and planned_parent_artifact_id)
 
 
 def _source_column_count(layout: LayoutConfig) -> int:
@@ -988,6 +1197,8 @@ def _estimated_content_height(operation: dict[str, Any], *, layout: LayoutConfig
     if operation.get("item_type") == "table":
         rows = operation.get("rows") if isinstance(operation.get("rows"), list) else []
         return max(layout.min_card_height, 120.0 + (len(rows) * 44.0))
+    if _is_source_header_card(operation):
+        return _source_header_height(layout)
 
     content_html = _shape_content_html(operation, layout=layout) if operation.get("item_type") == "doc" else _operation_content_html(operation)
     plain_text = re.sub(r"<[^>]+>", " ", content_html)
@@ -996,7 +1207,12 @@ def _estimated_content_height(operation: dict[str, Any], *, layout: LayoutConfig
         3,
         int(max(len(plain_text), 1) / max(layout.chars_per_line, 20.0)),
     )
-    return max(layout.min_card_height, 100.0 + (estimated_lines * 24.0))
+    base_height = 100.0 + (estimated_lines * 24.0)
+    if _is_lightweight_doc_card(operation):
+        return max(120.0, min(layout.min_card_height - 28.0, 152.0), base_height - 12.0)
+    if _is_major_doc_card(operation):
+        return max(layout.min_card_height + 8.0, 124.0 + (estimated_lines * 24.0))
+    return max(layout.min_card_height, base_height - 6.0)
 
 
 def _content_width(
@@ -1046,6 +1262,17 @@ def _shape_geometry(
             "height": layout.workstream_header_height,
         }
     if operation.get("item_type") == "doc":
+        if _is_source_header_card(operation):
+            planned_geometry = operation.get("planned_geometry")
+            if isinstance(planned_geometry, dict) and planned_geometry.get("width") is not None and planned_geometry.get("height") is not None:
+                return {
+                    "width": float(planned_geometry["width"]),
+                    "height": float(planned_geometry["height"]),
+                }
+            return {
+                "width": _source_group_width(layout),
+                "height": _source_header_height(layout),
+            }
         return {
             "width": _content_width(operation, layout=layout, existing_item=existing_item),
             "height": _estimated_content_height(operation, layout=layout),
@@ -1072,22 +1299,44 @@ def _shape_style(operation: dict[str, Any], *, layout: LayoutConfig) -> dict[str
         }
     if item_type == "workstream_anchor":
         return {
-            "fillColor": _lighten_hex(accent, 0.80),
+            "fillColor": _lighten_hex(accent, 0.84),
             "fillOpacity": "1.0",
             "borderColor": accent,
             "borderStyle": "normal",
-            "borderWidth": "2.0",
+            "borderWidth": "2.4",
             "textAlign": "left",
             "textAlignVertical": "middle",
             "fontSize": str(int(layout.workstream_title_font_size)),
         }
     if item_type == "doc":
+        if _is_source_header_card(operation):
+            return {
+                "fillColor": _lighten_hex(accent, 0.86),
+                "fillOpacity": "1.0",
+                "borderColor": _lighten_hex(accent, 0.18),
+                "borderStyle": "normal",
+                "borderWidth": "2.2",
+                "textAlign": "left",
+                "textAlignVertical": "middle",
+                "fontSize": str(int(layout.source_title_font_size)),
+            }
+        if _is_major_doc_card(operation):
+            return {
+                "fillColor": _lighten_hex(accent, 0.91),
+                "fillOpacity": "1.0",
+                "borderColor": _lighten_hex(accent, 0.10),
+                "borderStyle": "normal",
+                "borderWidth": "2.8",
+                "textAlign": "left",
+                "textAlignVertical": "top",
+                "fontSize": str(int(layout.doc_font_size)),
+            }
         return {
             "fillColor": "#ffffff",
             "fillOpacity": "1.0",
-            "borderColor": _lighten_hex(accent, 0.35),
+            "borderColor": _lighten_hex(accent, 0.42),
             "borderStyle": "normal",
-            "borderWidth": "2.0",
+            "borderWidth": "1.6",
             "textAlign": "left",
             "textAlignVertical": "top",
             "fontSize": str(int(layout.doc_font_size)),
@@ -1153,6 +1402,13 @@ def _shape_content_html(operation: dict[str, Any], *, layout: LayoutConfig) -> s
 
 
 def _doc_summary_html(operation: dict[str, Any], *, layout: LayoutConfig) -> list[str]:
+    if _is_source_header_card(operation):
+        title = html.escape(str(operation.get("title") or ""))
+        subtitle = html.escape(str(operation.get("content") or ""))
+        lines = [f"<p><strong>{title}</strong></p>"]
+        if subtitle:
+            lines.append(f"<p><em>{subtitle}</em></p>")
+        return lines
     title = html.escape(_doc_card_title(operation))
     phase = html.escape(str(operation.get("phase_zone") or "").replace("_", " ").title())
     workstream = html.escape(str(operation.get("workstream") or "").title())
@@ -1161,14 +1417,23 @@ def _doc_summary_html(operation: dict[str, Any], *, layout: LayoutConfig) -> lis
     max_bullets = max(0, int(layout.summary_max_bullets))
     bullet_limit = int(layout.summary_bullet_chars)
 
-    paragraphs = _summary_paragraphs(content)
-    bullets = _summary_bullets(content)
+    paragraphs = _meaningful_summary_paragraphs(content)
+    bullets = _meaningful_summary_bullets(content)
+    placeholder_paragraphs = _placeholder_summary_paragraphs(content)
+    if not paragraphs and not bullets:
+        fallback_content = _sanitize_markdown_for_miro(str(operation.get("summary_fallback_content") or ""))
+        if fallback_content:
+            paragraphs = _meaningful_summary_paragraphs(fallback_content)
+            bullets = _meaningful_summary_bullets(fallback_content)
+            placeholder_paragraphs = _placeholder_summary_paragraphs(fallback_content) or placeholder_paragraphs
     lines = [
         f"<p><strong>{title}</strong></p>",
         f"<p><em>{phase} / {workstream}</em></p>",
     ]
     if paragraphs:
         lines.append(f"<p>{html.escape(_truncate_text(paragraphs[0], paragraph_limit))}</p>")
+    elif placeholder_paragraphs:
+        lines.append(f"<p>{html.escape(_truncate_text(placeholder_paragraphs[0], paragraph_limit))}</p>")
     if bullets:
         for bullet in bullets[:max_bullets]:
             lines.append(f"<p>&bull; {html.escape(_truncate_text(bullet, bullet_limit))}</p>")
@@ -1192,6 +1457,8 @@ def _doc_card_title(operation: dict[str, Any]) -> str:
 
 
 def _frame_title(operation: dict[str, Any]) -> str:
+    if operation.get("item_type") == "source_frame":
+        return _FRAME_HIDDEN_TITLE
     title = str(operation.get("title") or "").strip()
     subtitle = str(operation.get("content") or "").strip()
     if subtitle:
@@ -1244,6 +1511,14 @@ def _summary_paragraphs(content: str) -> list[str]:
     return [paragraph for paragraph in paragraphs if paragraph]
 
 
+def _placeholder_summary_paragraphs(content: str) -> list[str]:
+    return [paragraph for paragraph in _summary_paragraphs(content) if paragraph in _SUMMARY_PLACEHOLDERS]
+
+
+def _meaningful_summary_paragraphs(content: str) -> list[str]:
+    return [paragraph for paragraph in _summary_paragraphs(content) if paragraph not in _SUMMARY_PLACEHOLDERS]
+
+
 def _summary_bullets(content: str) -> list[str]:
     bullets: list[str] = []
     for raw_line in content.splitlines():
@@ -1255,6 +1530,24 @@ def _summary_bullets(content: str) -> list[str]:
         if match is not None:
             bullets.append(match.group("item"))
     return [bullet for bullet in bullets if bullet]
+
+
+def _meaningful_summary_bullets(content: str) -> list[str]:
+    return [bullet for bullet in _summary_bullets(content) if bullet not in _SUMMARY_PLACEHOLDERS]
+
+
+def _is_lightweight_doc_card(operation: dict[str, Any]) -> bool:
+    if operation.get("item_type") != "doc" or _is_source_header_card(operation):
+        return False
+    content = _sanitize_markdown_for_miro(str(operation.get("content") or ""))
+    paragraphs = _meaningful_summary_paragraphs(content)
+    bullets = _meaningful_summary_bullets(content)
+    if paragraphs:
+        return False
+    if 0 < len(bullets) <= 4:
+        return True
+    compact = re.sub(r"\s+", " ", content).strip()
+    return bool(compact) and len(compact) <= 96
 
 
 def _truncate_text(value: str, limit: int) -> str:
@@ -1330,6 +1623,7 @@ def _markdown_to_simple_html(content: str) -> str:
 
 
 def _sanitize_markdown_for_miro(content: str) -> str:
+    content = _strip_yaml_front_matter(content)
     sanitized_lines: list[str] = []
     removed_web_payload = False
     in_code = False
@@ -1402,6 +1696,18 @@ def _sanitize_markdown_for_miro(content: str) -> str:
     flush_removed_payload_note()
     sanitized = "\n".join(sanitized_lines).strip()
     return sanitized or _HTML_PAYLOAD_SUMMARY
+
+
+def _strip_yaml_front_matter(content: str) -> str:
+    lines = content.splitlines()
+    if len(lines) < 3:
+        return content
+    if lines[0].strip() != "---":
+        return content
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return "\n".join(lines[index + 1 :])
+    return content
 
 
 def _should_summarize_code_block(block_text: str, language: str) -> bool:

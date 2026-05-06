@@ -65,8 +65,9 @@ class LayoutConfig:
     fragment_gap_y: float = 56.0
     min_card_height: float = 184.0
     chars_per_line: float = 44.0
-    zone_width: float = 6400.0
-    zone_height: float = 110.0
+    zone_width: float = 520.0
+    zone_height: float = 84.0
+    phase_gap_y: float = 340.0
     workstream_header_width: float = 1180.0
     workstream_header_height: float = 108.0
     zone_title_font_size: float = 22.0
@@ -167,6 +168,7 @@ def _resolve_layout_config(layout: object) -> LayoutConfig:
         chars_per_line=_normalize_float_value(layout.get("chars_per_line"), defaults.chars_per_line, label="layout.chars_per_line"),
         zone_width=_normalize_float_value(layout.get("zone_width"), defaults.zone_width, label="layout.zone_width"),
         zone_height=_normalize_float_value(layout.get("zone_height"), defaults.zone_height, label="layout.zone_height"),
+        phase_gap_y=_normalize_float_value(layout.get("phase_gap_y"), defaults.phase_gap_y, label="layout.phase_gap_y"),
         workstream_header_width=_normalize_float_value(layout.get("workstream_header_width"), defaults.workstream_header_width, label="layout.workstream_header_width"),
         workstream_header_height=_normalize_float_value(layout.get("workstream_header_height"), defaults.workstream_header_height, label="layout.workstream_header_height"),
         zone_title_font_size=_normalize_float_value(layout.get("zone_title_font_size"), defaults.zone_title_font_size, label="layout.zone_title_font_size"),

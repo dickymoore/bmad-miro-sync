@@ -118,6 +118,7 @@ def build_sync_plan(
 
     ordered_artifacts = _expand_oversized_doc_artifacts(_sort_artifacts(artifacts), config, object_strategies, plan.warnings)
     plan.artifacts = ordered_artifacts
+    summary_fallbacks = _summary_fallbacks_by_artifact(ordered_artifacts)
     used_zones = _ordered_unique([artifact.phase_zone for artifact in ordered_artifacts])
     used_workstreams = _ordered_unique((artifact.phase_zone, artifact.workstream) for artifact in ordered_artifacts)
     artifact_ranks = _artifact_ranks(ordered_artifacts)
@@ -189,11 +190,13 @@ def build_sync_plan(
         )
 
     source_groups = _draft_source_groups(ordered_artifacts)
+    source_frame_actions: dict[str, str] = {}
     for source_group in source_groups:
         source_frame_strategy = _source_frame_strategy()
         source_title = _source_group_title(source_group, ordered_artifacts)
         source_subtitle = _source_group_subtitle(source_group)
         source_artifact_id = _source_frame_artifact_id(source_group.source_artifact_id)
+        source_header_artifact_id = _source_header_artifact_id(source_group.source_artifact_id)
         existing_item = manifest.items.get(source_artifact_id)
         existing_item = existing_item if _is_reusable_existing_item(existing_item) else None
         reusable_existing_item = _matching_existing_item(existing_item, "source_frame")
@@ -214,6 +217,10 @@ def build_sync_plan(
             source_group.source_sha256,
             "source_frame",
         )
+        if reusable_existing_item is not None and action == "skip":
+            action = "update_source_frame"
+            status = "pending"
+        source_frame_actions[source_group.source_artifact_id] = action
         plan.operations.append(
             PublishOperation(
                 op_id=f"source_frame:{source_group.source_artifact_id}",
@@ -231,10 +238,12 @@ def build_sync_plan(
                 container_target_key=f"workstream:{source_group.phase_zones[0]}:{source_group.workstreams[0]}",
                 content=source_subtitle,
                 existing_item=reusable_existing_item,
-                layout_policy=_content_layout_policy(action, reusable_existing_item),
-                layout_snapshot=_layout_snapshot(reusable_existing_item)
-                if action in _PRESERVE_LAYOUT_ACTIONS
-                else None,
+                layout_policy=None if action == "update_source_frame" else _content_layout_policy(action, reusable_existing_item),
+                layout_snapshot=None if action == "update_source_frame" else (
+                    _layout_snapshot(reusable_existing_item)
+                    if action in _PRESERVE_LAYOUT_ACTIONS
+                    else None
+                ),
                 object_family=source_frame_strategy.object_family,
                 preferred_item_type=source_frame_strategy.preferred_item_type,
                 resolved_item_type=source_frame_strategy.resolved_item_type,
@@ -259,12 +268,87 @@ def build_sync_plan(
             )
         )
 
+        header_existing_item = manifest.items.get(source_header_artifact_id)
+        header_existing_item = header_existing_item if _is_reusable_existing_item(header_existing_item) else None
+        reusable_header_existing_item = _matching_existing_item(header_existing_item, "doc")
+        if reusable_header_existing_item is not None:
+            handled_manifest_ids.add(reusable_header_existing_item["artifact_id"])
+        elif header_existing_item is not None:
+            handled_manifest_ids.add(header_existing_item["artifact_id"])
+            replacement_operations.append(
+                _build_replacement_operation(
+                    header_existing_item,
+                    config.removed_item_policy,
+                    strategy=_default_item_strategy("doc"),
+                )
+            )
+        header_sha256 = hashlib.sha256(
+            f"{source_group.source_sha256}|{source_title}|{source_subtitle}".encode("utf-8")
+        ).hexdigest()
+        header_action, header_status = _resolve_content_action(
+            reusable_header_existing_item,
+            False,
+            header_sha256,
+            "doc",
+        )
+        if source_frame_actions.get(source_group.source_artifact_id) == "update_source_frame" and header_action == "skip":
+            header_action = "update_doc"
+            header_status = "pending"
+        plan.operations.append(
+            PublishOperation(
+                op_id=f"doc:{source_header_artifact_id}",
+                action=header_action,
+                item_type="doc",
+                artifact_sha256=header_sha256,
+                title=source_title,
+                phase=_zone_phase(source_group.phase_zones[0]),
+                phase_zone=source_group.phase_zones[0],
+                workstream=source_group.workstreams[0],
+                collaboration_intent="orientation",
+                artifact_id=source_header_artifact_id,
+                source_artifact_id=source_group.source_artifact_id,
+                target_key=f"artifact:{source_header_artifact_id}",
+                container_target_key=f"workstream:{source_group.phase_zones[0]}:{source_group.workstreams[0]}",
+                content=source_subtitle,
+                existing_item=reusable_header_existing_item,
+                layout_policy=None if header_action == "update_doc" else _content_layout_policy(header_action, reusable_header_existing_item),
+                layout_snapshot=None if header_action == "update_doc" else (
+                    _layout_snapshot(reusable_header_existing_item)
+                    if header_action in _PRESERVE_LAYOUT_ACTIONS
+                    else None
+                ),
+                object_family=_OBJECT_FAMILY_ARTIFACT_CONTENT,
+                preferred_item_type="doc",
+                resolved_item_type="doc",
+                status=header_status,
+                lifecycle_state="active",
+                heading_level=0,
+                parent_artifact_id=None,
+                deterministic_order=DeterministicOrder(
+                    zone_rank=phase_zone_rank(source_group.phase_zones[0]),
+                    workstream_rank=workstream_rank(source_group.workstreams[0]),
+                    object_rank=3,
+                    artifact_rank=_artifact_ranks(ordered_artifacts)[
+                        (
+                            source_group.phase_zones[0],
+                            source_group.workstreams[0],
+                            source_group.source_artifact_id,
+                        )
+                    ],
+                    section_rank=-1,
+                ),
+            )
+        )
+
     for artifact in ordered_artifacts:
         existing_item, reused_previous_identity = _resolve_existing_item(manifest, artifact)
         resolved_operation = _resolve_artifact_operation(artifact, config, object_strategies)
         operation_strategy = _artifact_operation_strategy(resolved_operation.strategy, artifact)
         item_type = resolved_operation.item_type
         action, status = _resolve_content_action(existing_item, reused_previous_identity, artifact.sha256, item_type)
+        if source_frame_actions.get(artifact.source_artifact_id) == "update_source_frame" and action == "skip":
+            action = f"update_{item_type}"
+            status = "pending"
         columns = resolved_operation.columns
         rows = resolved_operation.rows
         reusable_existing_item = _matching_existing_item(existing_item, item_type)
@@ -301,11 +385,14 @@ def build_sync_plan(
                     reusable_existing_item,
                 ),
                 content=artifact.content if item_type == "doc" else None,
+                summary_fallback_content=summary_fallbacks.get(artifact.artifact_id) if item_type == "doc" else None,
                 columns=columns,
                 rows=rows,
                 existing_item=reusable_existing_item,
-                layout_policy=_content_layout_policy(action, reusable_existing_item),
-                layout_snapshot=_layout_snapshot(reusable_existing_item) if action in _PRESERVE_LAYOUT_ACTIONS else None,
+                layout_policy=None if action.startswith("update_") and source_frame_actions.get(artifact.source_artifact_id) == "update_source_frame" else _content_layout_policy(action, reusable_existing_item),
+                layout_snapshot=None if action.startswith("update_") and source_frame_actions.get(artifact.source_artifact_id) == "update_source_frame" else (
+                    _layout_snapshot(reusable_existing_item) if action in _PRESERVE_LAYOUT_ACTIONS else None
+                ),
                 object_family=operation_strategy.object_family,
                 preferred_item_type=operation_strategy.preferred_item_type,
                 resolved_item_type=operation_strategy.resolved_item_type,
@@ -776,6 +863,80 @@ def _content_body_without_heading(content: str) -> str:
     return content.strip()
 
 
+def _strip_yaml_front_matter(content: str) -> str:
+    lines = content.splitlines()
+    if len(lines) < 3 or lines[0].strip() != "---":
+        return content
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return "\n".join(lines[index + 1 :]).strip()
+    return content
+
+
+def _summary_fallbacks_by_artifact(artifacts: list[ArtifactRecord]) -> dict[str, str]:
+    fallback_by_artifact: dict[str, str] = {}
+    source_root_fallback_index: dict[str, int] = {}
+    for index, artifact in enumerate(artifacts):
+        if _has_meaningful_board_summary(artifact.content):
+            continue
+        if artifact.heading_level <= 1:
+            fallback_index = source_root_fallback_index.get(artifact.source_artifact_id, 0)
+            fallback = _indexed_summary_fallback(artifact, artifacts[index + 1 :], fallback_index)
+            if fallback:
+                source_root_fallback_index[artifact.source_artifact_id] = fallback_index + 1
+        else:
+            fallback = _indexed_summary_fallback(artifact, artifacts[index + 1 :], 0)
+        if fallback:
+            fallback_by_artifact[artifact.artifact_id] = fallback
+    return fallback_by_artifact
+
+
+def _indexed_summary_fallback(
+    artifact: ArtifactRecord,
+    later_artifacts: list[ArtifactRecord],
+    selection_index: int,
+) -> str | None:
+    candidates = _summary_fallback_candidates(artifact, later_artifacts)
+    if not candidates:
+        return None
+    return candidates[min(selection_index, len(candidates) - 1)]
+
+
+def _summary_fallback_candidates(artifact: ArtifactRecord, later_artifacts: list[ArtifactRecord]) -> list[str]:
+    candidates: list[str] = []
+    for candidate in later_artifacts:
+        if candidate.source_artifact_id != artifact.source_artifact_id:
+            continue
+        if artifact.heading_level >= 1 and artifact.section_path:
+            prefix = artifact.section_path
+            if len(candidate.section_path) <= len(prefix) or candidate.section_path[: len(prefix)] != prefix:
+                continue
+        if candidate.heading_level <= artifact.heading_level:
+            continue
+        if not _has_meaningful_board_summary(candidate.content):
+            continue
+        candidates.append(candidate.content)
+    return candidates
+
+
+def _has_meaningful_board_summary(content: str) -> bool:
+    body = _content_body_without_heading(_strip_yaml_front_matter(content))
+    lines = [line.strip() for line in body.splitlines()]
+    meaningful_lines: list[str] = []
+    for line in lines:
+        if not line:
+            continue
+        if re.match(r"^\*\*(author|date):\*\*", line, flags=re.IGNORECASE):
+            continue
+        if re.match(r"^[A-Za-z0-9_-]+:\s*$", line):
+            continue
+        meaningful_lines.append(line)
+    if not meaningful_lines:
+        return False
+    joined = " ".join(meaningful_lines)
+    return len(joined) >= 24
+
+
 def _fragment_markdown_content(heading_prefix: str, title: str, body: str) -> str:
     heading_line = f"{heading_prefix} {title}".strip()
     body = body.strip()
@@ -949,6 +1110,10 @@ def _source_group_subtitle(source_group: SourceGroup) -> str:
 
 def _source_frame_artifact_id(source_artifact_id: str) -> str:
     return f"source:{source_artifact_id}"
+
+
+def _source_header_artifact_id(source_artifact_id: str) -> str:
+    return f"source_header:{source_artifact_id}"
 
 
 def _default_item_strategy(item_type: str) -> ObjectStrategyDecision:

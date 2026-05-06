@@ -900,13 +900,14 @@ class CliPublishDirectTests(unittest.TestCase):
             self.assertEqual(server.calls[1]["path"], "/v2/boards/uXjVGixS6vQ=/frames")
             self.assertEqual(server.calls[2]["path"], "/v2/boards/uXjVGixS6vQ=/items/bulk")
             self.assertEqual(len(server.calls[0]["body"]), 1)
-            self.assertEqual(len(server.calls[2]["body"]), 1)
+            self.assertEqual(len(server.calls[2]["body"]), 2)
             results_payload = json.loads((runtime_dir / "results.json").read_text(encoding="utf-8"))
             self.assertEqual(results_payload["run_status"], "complete")
-            self.assertEqual(len(results_payload["items"]), 3)
+            self.assertEqual(len(results_payload["items"]), 4)
             state = json.loads((root / ".bmad-miro-sync/state.json").read_text(encoding="utf-8"))
             self.assertEqual(state["last_run"]["run_status"], "complete")
             self.assertEqual(state["items"]["_bmad-output/planning-artifacts/prd.md#prd"]["host_item_type"], "shape")
+            self.assertEqual(state["items"][f"source_header:_bmad-output/planning-artifacts/prd.md"]["host_item_type"], "shape")
             self.assertEqual(state["items"]["workstream:planning:product"]["host_item_type"], "shape")
             self.assertEqual(state["items"]["source:_bmad-output/planning-artifacts/prd.md"]["host_item_type"], "frame")
 
@@ -1032,16 +1033,23 @@ planning = "#123456"
             workstream_payload = server.calls[0]["body"]
             frame_payload = server.calls[1]["body"]
             doc_payload = server.calls[2]["body"]
+            header_payload = next(item for item in doc_payload if item["data"]["content"].startswith("<p><strong>PRD</strong></p>"))
+            section_payload = next(item for item in doc_payload if "<strong>Summary</strong>" in item["data"]["content"])
             self.assertEqual(workstream_payload[0]["position"]["x"], 150.0)
-            self.assertEqual(workstream_payload[0]["position"]["y"], -169.0)
-            self.assertEqual(workstream_payload[0]["style"]["fillColor"], "#d3dffb")
+            self.assertEqual(workstream_payload[0]["position"]["y"], -182.0)
+            self.assertEqual(workstream_payload[0]["style"]["fillColor"], "#dce6fb")
             self.assertEqual(frame_payload["position"]["x"], 150.0)
-            self.assertEqual(frame_payload["position"]["y"], 105.0)
             self.assertEqual(frame_payload["geometry"]["width"], 1580.0)
-            self.assertEqual(doc_payload[0]["position"]["x"], 402.0)
-            self.assertEqual(doc_payload[0]["position"]["y"], 196.0)
-            self.assertEqual(doc_payload[0]["geometry"]["width"], 720.0)
-            self.assertEqual(doc_payload[0]["parent"]["id"], "frame-1")
+            workstream_bottom = workstream_payload[0]["position"]["y"] + (workstream_payload[0]["geometry"]["height"] / 2.0)
+            frame_top = frame_payload["position"]["y"] - (frame_payload["geometry"]["height"] / 2.0)
+            self.assertGreaterEqual(frame_top - workstream_bottom, 112.0)
+            self.assertGreater(header_payload["position"]["x"], section_payload["position"]["x"])
+            self.assertGreater(header_payload["geometry"]["width"], section_payload["geometry"]["width"])
+            self.assertEqual(header_payload["parent"]["id"], "frame-1")
+            self.assertGreater(section_payload["position"]["y"], header_payload["position"]["y"])
+            self.assertEqual(section_payload["position"]["x"], 402.0)
+            self.assertEqual(section_payload["geometry"]["width"], 720.0)
+            self.assertEqual(section_payload["parent"]["id"], "frame-1")
 
     def test_publish_direct_sanitizes_raw_html_and_css_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1052,7 +1060,11 @@ planning = "#123456"
             runtime_dir.mkdir(parents=True)
             (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
             plan = _sample_publish_plan(root)
-            doc_operation = next(operation for operation in plan["operations"] if operation["item_type"] == "doc")
+            doc_operation = next(
+                operation
+                for operation in plan["operations"]
+                if operation["item_type"] == "doc" and not operation["artifact_id"].startswith("source_header:")
+            )
             doc_operation["content"] = (
                 "# PRD\n\n"
                 "<!DOCTYPE html>\n"
@@ -1104,7 +1116,7 @@ planning = "#123456"
 
             self.assertEqual(result.returncode, 0, result.stderr)
             bulk_payload = server.calls[2]["body"]
-            content = bulk_payload[0]["data"]["content"]
+            content = next(item["data"]["content"] for item in bulk_payload if "<strong>Summary</strong>" in item["data"]["content"])
             self.assertIn("Visible summary text.", content)
             self.assertIn("Raw HTML/CSS payload omitted from Miro sync", content)
             self.assertIn("Code-heavy block omitted from Miro sync", content)
@@ -1405,9 +1417,9 @@ def _sample_publish_plan(root: Path) -> dict[str, object]:
                 "phase_zones": ["planning"],
                 "workstreams": ["product"],
                 "section_artifact_ids": [artifact_id],
-                "operation_ids": [f"source_frame:{source_artifact_id}", f"doc:{artifact_id}"],
+                "operation_ids": [f"source_frame:{source_artifact_id}", f"doc:source_header:{source_artifact_id}", f"doc:{artifact_id}"],
                 "source_sha256": "source-sha-prd",
-                "pending_operation_count": 2,
+                "pending_operation_count": 3,
             }
         ],
         "operations": [
@@ -1474,6 +1486,39 @@ def _sample_publish_plan(root: Path) -> dict[str, object]:
                 },
             },
             {
+                "op_id": f"doc:source_header:{source_artifact_id}",
+                "action": "create_doc",
+                "item_type": "doc",
+                "title": "PRD",
+                "phase": "planning",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "collaboration_intent": "orientation",
+                "artifact_id": f"source_header:{source_artifact_id}",
+                "artifact_sha256": "header-sha-prd",
+                "source_artifact_id": source_artifact_id,
+                "target_key": f"artifact:source_header:{source_artifact_id}",
+                "container_target_key": "workstream:planning:product",
+                "content": "Product · 1 section",
+                "object_family": "artifact_content",
+                "preferred_item_type": "doc",
+                "resolved_item_type": "doc",
+                "degraded": False,
+                "fallback_reason": None,
+                "degraded_warning": None,
+                "status": "pending",
+                "lifecycle_state": "active",
+                "heading_level": 0,
+                "parent_artifact_id": None,
+                "deterministic_order": {
+                    "zone_rank": 1,
+                    "workstream_rank": 1,
+                    "object_rank": 3,
+                    "artifact_rank": 1,
+                    "section_rank": -1,
+                },
+            },
+            {
                 "op_id": f"doc:{artifact_id}",
                 "action": "create_doc",
                 "item_type": "doc",
@@ -1500,7 +1545,7 @@ def _sample_publish_plan(root: Path) -> dict[str, object]:
                 "deterministic_order": {
                     "zone_rank": 1,
                     "workstream_rank": 1,
-                    "object_rank": 3,
+                    "object_rank": 4,
                     "artifact_rank": 1,
                     "section_rank": 1,
                 },

@@ -10,3 +10,5 @@ coverage/
 .codex/
 .inbox/
 logs/
+.playwright-mcp/
+*.png

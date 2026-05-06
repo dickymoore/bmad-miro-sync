@@ -205,6 +205,7 @@ class PublishOperation:
     artifact_sha256: str | None = None
     container_target_key: str | None = None
     content: str | None = None
+    summary_fallback_content: str | None = None
     columns: list[dict[str, Any]] | None = None
     rows: list[dict[str, Any]] | None = None
     existing_item: dict[str, Any] | None = None
