@@ -259,6 +259,57 @@ class PlannerTests(unittest.TestCase):
             self.assertIn("FluidScan is a web application for readers", overview.summary_fallback_content or "")
             self.assertIn("FluidScan is classified as a web app", summary.summary_fallback_content or "")
 
+    def test_source_frame_titles_prefer_artifact_identity_over_generic_overview_headings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            research_dir = root / "_bmad-output/planning-artifacts/research"
+            research_dir.mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            (research_dir / "technical-rsvp-speed-reading-reader-app-research-2026-04-14.md").write_text(
+                "# Overview\n\n"
+                "## Executive Summary\n\n"
+                "Technical findings.\n",
+                encoding="utf-8",
+            )
+            (research_dir / "market-fluidscan-rsvp-reading-market-research-2026-04-17.md").write_text(
+                "# Overview\n\n"
+                "## Market Summary\n\n"
+                "Market findings.\n",
+                encoding="utf-8",
+            )
+            (root / "_bmad-output/planning-artifacts/product-brief-fluidscan-distillate.md").write_text(
+                "# Overview\n\n"
+                "## Distillate Summary\n\n"
+                "Condensed brief.\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(root / ".bmad-miro.toml")
+            plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
+
+            technical_frame = next(
+                operation
+                for operation in plan.operations
+                if operation.item_type == "source_frame"
+                and operation.source_artifact_id.endswith("technical-rsvp-speed-reading-reader-app-research-2026-04-14.md")
+            )
+            market_frame = next(
+                operation
+                for operation in plan.operations
+                if operation.item_type == "source_frame"
+                and operation.source_artifact_id.endswith("market-fluidscan-rsvp-reading-market-research-2026-04-17.md")
+            )
+            brief_distillate_frame = next(
+                operation
+                for operation in plan.operations
+                if operation.item_type == "source_frame"
+                and operation.source_artifact_id.endswith("product-brief-fluidscan-distillate.md")
+            )
+
+            self.assertEqual(technical_frame.title, "Technical Research")
+            self.assertEqual(market_frame.title, "Market Research")
+            self.assertEqual(brief_distillate_frame.title, "Product Brief Distillate")
+
     def test_existing_manifest_skips_unchanged_docs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

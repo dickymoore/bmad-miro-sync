@@ -860,7 +860,7 @@ def _initialize_source_frame_meta(
         "operation_index": -1,
         "position": {"x": position_x, "y": top_y + (geometry_height / 2.0)},
         "geometry": {"width": geometry_width, "height": geometry_height},
-        "column_positions": [_source_frame_top_padding(layout) + (layout.min_card_height / 2.0) for _ in range(_source_column_count(layout))],
+        "column_positions": [float(_source_frame_top_padding(layout)) for _ in range(_source_column_count(layout))],
         "padding_x": _source_frame_padding_x(layout),
         "top_padding": top_padding,
         "bottom_padding": bottom_padding,
@@ -962,7 +962,7 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
         source_key = (phase_zone, workstream, str(planned.get("source_artifact_id") or planned.get("artifact_id") or ""))
 
         if action == "ensure_zone":
-            planned["planned_position"] = {"x": 0.0, "y": phase_y}
+            planned["planned_position"] = {"x": _zone_label_x(layout), "y": phase_y}
         elif action == "ensure_workstream_anchor":
             anchor_y = phase_y + (layout.zone_height / 2.0) + 26.0
             planned["planned_position"] = {"x": workstream_x, "y": anchor_y}
@@ -997,7 +997,7 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
                     planned_frame["planned_geometry"] = frame_meta["geometry"]
                     planned_frame["planned_position"] = frame_meta["position"]
             column_index = min(range(len(frame_meta["column_positions"])), key=lambda idx: frame_meta["column_positions"][idx])
-            current_y = frame_meta["column_positions"][column_index]
+            current_top = frame_meta["column_positions"][column_index]
             current_x = _content_column_x(
                 left_padding=frame_meta["padding_x"],
                 column_index=column_index,
@@ -1006,13 +1006,14 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
             )
             if _is_split_fragment(planned):
                 current_x += layout.fragment_indent_x / 2.0
+            estimated_height = _estimated_content_height(planned, layout=layout)
+            current_y = current_top + (estimated_height / 2.0)
             planned["planned_position"] = {"x": current_x, "y": current_y}
             planned["planned_parent_artifact_id"] = _source_frame_artifact_id(str(planned.get("source_artifact_id") or ""))
-            estimated_height = _estimated_content_height(planned, layout=layout)
-            frame_meta["column_positions"][column_index] = current_y + estimated_height + (
+            frame_meta["column_positions"][column_index] = current_top + estimated_height + (
                 layout.fragment_gap_y if _is_split_fragment(planned) else layout.content_gap_y
             )
-            frame_meta["max_bottom"] = max(frame_meta["max_bottom"], current_y + (estimated_height / 2.0))
+            frame_meta["max_bottom"] = max(frame_meta["max_bottom"], current_top + estimated_height)
             frame_meta["max_right"] = max(
                 frame_meta["max_right"],
                 current_x + (_content_width(planned, layout=layout) / 2.0),
@@ -1077,14 +1078,15 @@ def _apply_pending_source_header(
     if planned.get("planned_position") is not None:
         return
     header_height = _source_header_height(layout)
-    current_y = frame_meta["top_padding"] + (header_height / 2.0)
+    current_top = frame_meta["top_padding"]
+    current_y = current_top + (header_height / 2.0)
     current_x = frame_meta["padding_x"] + (_source_group_width(layout) / 2.0)
     planned["planned_position"] = {"x": current_x, "y": current_y}
     planned["planned_parent_artifact_id"] = _source_frame_artifact_id(str(planned.get("source_artifact_id") or ""))
     planned["planned_geometry"] = {"width": _source_group_width(layout), "height": header_height}
-    next_y = current_y + (header_height / 2.0) + layout.content_gap_y
-    frame_meta["column_positions"] = [max(position, next_y) for position in frame_meta["column_positions"]]
-    frame_meta["max_bottom"] = max(frame_meta["max_bottom"], current_y + (header_height / 2.0))
+    next_top = current_top + header_height + layout.content_gap_y
+    frame_meta["column_positions"] = [max(position, next_top) for position in frame_meta["column_positions"]]
+    frame_meta["max_bottom"] = max(frame_meta["max_bottom"], current_top + header_height)
     frame_meta["max_right"] = max(
         frame_meta["max_right"],
         current_x + (_source_group_width(layout) / 2.0),

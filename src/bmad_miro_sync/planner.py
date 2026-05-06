@@ -1084,21 +1084,39 @@ def _source_frame_strategy() -> ObjectStrategyDecision:
 
 def _source_group_title(source_group: SourceGroup, artifacts: list[ArtifactRecord]) -> str:
     relative_name = Path(source_group.relative_path).stem.strip()
-    title_aliases = {
-        "prd": "PRD",
-        "ux-design-specification": "UX Design Specification",
-        "architecture": "Architecture",
-        "implementation-readiness": "Implementation Readiness",
-        "implementation-handoff": "Implementation Handoff",
-        "decision-records": "Decision Records",
-    }
-    if relative_name in title_aliases:
-        return title_aliases[relative_name]
+    lowered_name = relative_name.lower()
+    if "product-brief" in lowered_name and lowered_name.endswith("-distillate"):
+        return "Product Brief Distillate"
+    title_aliases = (
+        ("product-brief-distillate", "Product Brief Distillate"),
+        ("product-brief", "Product Brief"),
+        ("brainstorming-session", "Brainstorming Session"),
+        ("market-research", "Market Research"),
+        ("technical-research", "Technical Research"),
+        ("prd", "PRD"),
+        ("ux-design-specification", "UX Design Specification"),
+        ("architecture", "Architecture"),
+        ("implementation-readiness", "Implementation Readiness"),
+        ("implementation-handoff", "Implementation Handoff"),
+        ("decision-records", "Decision Records"),
+    )
+    for token, alias in title_aliases:
+        if lowered_name == token or lowered_name.startswith(f"{token}-") or f"-{token}-" in lowered_name or lowered_name.endswith(f"-{token}"):
+            return alias
+    if "market" in lowered_name and "research" in lowered_name:
+        return "Market Research"
+    if "technical" in lowered_name and "research" in lowered_name:
+        return "Technical Research"
+    generic_titles = {"overview", "summary", "document summary", "research report", "report"}
     for artifact in artifacts:
         if artifact.source_artifact_id == source_group.source_artifact_id:
+            candidate = ""
             if artifact.heading_level <= 1 and artifact.section_title_path:
-                return artifact.section_title_path[-1]
-            return artifact.title
+                candidate = artifact.section_title_path[-1]
+            elif artifact.title:
+                candidate = artifact.title
+            if candidate and candidate.strip().lower() not in generic_titles:
+                return candidate
     return Path(source_group.relative_path).stem.replace("-", " ").replace("_", " ").title()
 
 
