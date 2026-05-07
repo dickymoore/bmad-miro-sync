@@ -1100,7 +1100,7 @@ def _stack_phase_positions(operations: list[dict[str, Any]], *, layout: LayoutCo
     if not phase_order:
         return operations
 
-    phase_extents = _phase_extents(operations, layout=layout)
+    phase_extents = _phase_extents(operations, layout=layout, include_zones=False)
     phase_offsets_x: dict[str, float] = {}
     phase_offsets_y: dict[str, float] = {}
 
@@ -1112,8 +1112,8 @@ def _stack_phase_positions(operations: list[dict[str, Any]], *, layout: LayoutCo
             previous_offset_x = phase_offsets_x[previous_phase]
             previous_extent = phase_extents.get(previous_phase, {"max_x": 0.0})
             current_extent = phase_extents.get(phase_zone, {"min_x": 0.0})
-            previous_right = previous_offset_x + float(previous_extent["max_x"])
-            current_left = float(current_extent["min_x"])
+            previous_right = previous_offset_x + float(previous_extent["max_x"]) + layout.phase_column_padding_x
+            current_left = float(current_extent["min_x"]) - layout.phase_column_padding_x
             phase_offsets_x[phase_zone] = previous_right + layout.phase_gap_x - current_left
             phase_offsets_y[phase_zone] = 0.0
     else:
@@ -1123,8 +1123,8 @@ def _stack_phase_positions(operations: list[dict[str, Any]], *, layout: LayoutCo
             previous_offset_y = phase_offsets_y[previous_phase]
             previous_extent = phase_extents.get(previous_phase, {"max_y": 0.0})
             current_extent = phase_extents.get(phase_zone, {"min_y": 0.0})
-            previous_bottom = previous_offset_y + float(previous_extent["max_y"])
-            current_top = float(current_extent["min_y"])
+            previous_bottom = previous_offset_y + float(previous_extent["max_y"]) + layout.phase_column_padding_bottom
+            current_top = float(current_extent["min_y"]) - layout.phase_column_padding_top
             phase_offsets_y[phase_zone] = previous_bottom + layout.phase_gap_y - current_top
             phase_offsets_x[phase_zone] = 0.0
 
@@ -1145,7 +1145,7 @@ def _stack_phase_positions(operations: list[dict[str, Any]], *, layout: LayoutCo
                 "y": float(planned_position["y"]) + phase_offsets_y.get(phase_zone, 0.0),
             }
         shifted_operations.append(shifted)
-    return shifted_operations
+    return _decorate_phase_columns(shifted_operations, layout=layout)
 
 
 def _ordered_phase_sequence(operations: list[dict[str, Any]]) -> list[str]:
@@ -1157,10 +1157,17 @@ def _ordered_phase_sequence(operations: list[dict[str, Any]]) -> list[str]:
     return phase_order
 
 
-def _phase_extents(operations: list[dict[str, Any]], *, layout: LayoutConfig) -> dict[str, dict[str, float]]:
+def _phase_extents(
+    operations: list[dict[str, Any]],
+    *,
+    layout: LayoutConfig,
+    include_zones: bool = True,
+) -> dict[str, dict[str, float]]:
     extents: dict[str, dict[str, float]] = {}
     for operation in operations:
         if not _is_top_level_operation(operation):
+            continue
+        if not include_zones and operation.get("item_type") == "zone":
             continue
         planned_position = operation.get("planned_position")
         if not isinstance(planned_position, dict):
@@ -1183,6 +1190,31 @@ def _phase_extents(operations: list[dict[str, Any]], *, layout: LayoutConfig) ->
         extents[phase_zone]["min_y"] = min(float(extents[phase_zone]["min_y"]), top)
         extents[phase_zone]["max_y"] = max(float(extents[phase_zone]["max_y"]), bottom)
     return extents
+
+
+def _decorate_phase_columns(operations: list[dict[str, Any]], *, layout: LayoutConfig) -> list[dict[str, Any]]:
+    extents = _phase_extents(operations, layout=layout, include_zones=False)
+    decorated: list[dict[str, Any]] = []
+    for operation in operations:
+        updated = dict(operation)
+        if updated.get("item_type") == "zone":
+            phase_zone = str(updated.get("phase_zone") or "planning")
+            extent = extents.get(phase_zone)
+            if extent is not None:
+                left = float(extent["min_x"]) - layout.phase_column_padding_x
+                right = float(extent["max_x"]) + layout.phase_column_padding_x
+                top = float(extent["min_y"]) - layout.phase_column_padding_top
+                bottom = float(extent["max_y"]) + layout.phase_column_padding_bottom
+                updated["planned_geometry"] = {
+                    "width": right - left,
+                    "height": bottom - top,
+                }
+                updated["planned_position"] = {
+                    "x": left + ((right - left) / 2.0),
+                    "y": top + ((bottom - top) / 2.0),
+                }
+        decorated.append(updated)
+    return decorated
 
 
 def _is_top_level_operation(operation: dict[str, Any]) -> bool:
@@ -1312,12 +1344,12 @@ def _shape_style(operation: dict[str, Any], *, layout: LayoutConfig) -> dict[str
     if item_type == "zone":
         return {
             "fillColor": phase_fill,
-            "fillOpacity": "0.45",
-            "borderColor": phase_fill,
+            "fillOpacity": "0.18",
+            "borderColor": _lighten_hex(phase_fill, 0.16),
             "borderStyle": "normal",
-            "borderWidth": "1.1",
+            "borderWidth": "2.0",
             "textAlign": "left",
-            "textAlignVertical": "middle",
+            "textAlignVertical": "top",
             "fontSize": str(int(layout.zone_title_font_size)),
         }
     if item_type == "workstream_anchor":
@@ -1416,7 +1448,7 @@ def _shape_content_html(operation: dict[str, Any], *, layout: LayoutConfig) -> s
     item_type = str(operation.get("item_type") or "")
     lines = [f"<p><strong>{title}</strong></p>"]
     if item_type == "zone":
-        lines.append(f"<p>{phase.title()} phase</p>")
+        lines = [f"<p><strong>{phase.replace('_', ' ').title()}</strong></p>", "<p><em>BMAD phase</em></p>"]
     elif item_type == "doc":
         lines = _doc_summary_html(operation, layout=layout)
     elif workstream and workstream != "general":

@@ -70,6 +70,9 @@ class LayoutConfig:
     zone_height: float = 84.0
     phase_gap_y: float = 340.0
     phase_gap_x: float = 760.0
+    phase_column_padding_x: float = 180.0
+    phase_column_padding_top: float = 164.0
+    phase_column_padding_bottom: float = 128.0
     workstream_header_width: float = 1180.0
     workstream_header_height: float = 108.0
     zone_title_font_size: float = 22.0
@@ -173,6 +176,9 @@ def _resolve_layout_config(layout: object) -> LayoutConfig:
         zone_height=_normalize_float_value(layout.get("zone_height"), defaults.zone_height, label="layout.zone_height"),
         phase_gap_y=_normalize_float_value(layout.get("phase_gap_y"), defaults.phase_gap_y, label="layout.phase_gap_y"),
         phase_gap_x=_normalize_float_value(layout.get("phase_gap_x"), defaults.phase_gap_x, label="layout.phase_gap_x"),
+        phase_column_padding_x=_normalize_float_value(layout.get("phase_column_padding_x"), defaults.phase_column_padding_x, label="layout.phase_column_padding_x"),
+        phase_column_padding_top=_normalize_float_value(layout.get("phase_column_padding_top"), defaults.phase_column_padding_top, label="layout.phase_column_padding_top"),
+        phase_column_padding_bottom=_normalize_float_value(layout.get("phase_column_padding_bottom"), defaults.phase_column_padding_bottom, label="layout.phase_column_padding_bottom"),
         workstream_header_width=_normalize_float_value(layout.get("workstream_header_width"), defaults.workstream_header_width, label="layout.workstream_header_width"),
         workstream_header_height=_normalize_float_value(layout.get("workstream_header_height"), defaults.workstream_header_height, label="layout.workstream_header_height"),
         zone_title_font_size=_normalize_float_value(layout.get("zone_title_font_size"), defaults.zone_title_font_size, label="layout.zone_title_font_size"),

@@ -219,6 +219,67 @@ class MiroApiLayoutTests(unittest.TestCase):
         planning_top = planning_frame["planned_position"]["y"] - (planning_frame["planned_geometry"]["height"] / 2.0)
         self.assertGreaterEqual(planning_top - analysis_bottom, layout.phase_gap_y)
 
+    def test_zone_background_spans_phase_content_with_padding(self) -> None:
+        layout = LayoutConfig()
+        operations = [
+            {
+                "op_id": "zone:analysis",
+                "action": "ensure_zone",
+                "item_type": "zone",
+                "phase_zone": "analysis",
+                "workstream": "general",
+            },
+            {
+                "op_id": "workstream:analysis:product",
+                "action": "ensure_workstream_anchor",
+                "item_type": "workstream_anchor",
+                "phase_zone": "analysis",
+                "workstream": "product",
+            },
+            {
+                "op_id": "source_frame:analysis-large",
+                "action": "create_source_frame",
+                "item_type": "source_frame",
+                "phase_zone": "analysis",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/analysis-large.md",
+            },
+            {
+                "op_id": "doc:analysis-large",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "analysis",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/analysis-large.md",
+                "artifact_id": "_bmad-output/analysis-large.md#overview",
+                "title": "Analysis / Overview",
+                "content": "Long content\\n" * 80,
+                "heading_level": 1,
+            },
+        ]
+
+        planned = _apply_layout_positions(operations, layout)
+        zone = planned[0]
+        workstream = planned[1]
+        frame = planned[2]
+
+        zone_left = zone["planned_position"]["x"] - (zone["planned_geometry"]["width"] / 2.0)
+        zone_right = zone["planned_position"]["x"] + (zone["planned_geometry"]["width"] / 2.0)
+        zone_top = zone["planned_position"]["y"] - (zone["planned_geometry"]["height"] / 2.0)
+        zone_bottom = zone["planned_position"]["y"] + (zone["planned_geometry"]["height"] / 2.0)
+
+        frame_left = frame["planned_position"]["x"] - (frame["planned_geometry"]["width"] / 2.0)
+        frame_right = frame["planned_position"]["x"] + (frame["planned_geometry"]["width"] / 2.0)
+        frame_top = frame["planned_position"]["y"] - (frame["planned_geometry"]["height"] / 2.0)
+        frame_bottom = frame["planned_position"]["y"] + (frame["planned_geometry"]["height"] / 2.0)
+
+        workstream_top = workstream["planned_position"]["y"] - (layout.workstream_header_height / 2.0)
+
+        self.assertLessEqual(zone_left, frame_left - layout.phase_column_padding_x)
+        self.assertGreaterEqual(zone_right, frame_right + layout.phase_column_padding_x)
+        self.assertLessEqual(zone_top, workstream_top - (layout.phase_column_padding_top - 24.0))
+        self.assertGreaterEqual(zone_bottom, frame_bottom + layout.phase_column_padding_bottom)
+
     def test_missing_source_frame_update_recreates_frame(self) -> None:
         layout = LayoutConfig()
         operation = {
