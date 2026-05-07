@@ -52,11 +52,13 @@ class PlannerTests(unittest.TestCase):
             plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
 
             self.assertEqual(
-                [operation.action for operation in plan.operations[:6]],
+                [operation.action for operation in plan.operations[:8]],
                 [
                     "ensure_zone",
                     "ensure_zone",
                     "ensure_zone",
+                    "create_phase_separator",
+                    "create_phase_separator",
                     "ensure_workstream_anchor",
                     "ensure_workstream_anchor",
                     "ensure_workstream_anchor",

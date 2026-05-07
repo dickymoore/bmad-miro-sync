@@ -37,7 +37,7 @@ WORKSTREAM_TITLES = {
 }
 
 _CONTENT_ITEM_TYPES = {"doc", "table"}
-_MANAGED_ITEM_TYPES = {"doc", "table", "source_frame"}
+_MANAGED_ITEM_TYPES = {"doc", "table", "source_frame", "phase_separator"}
 _TERMINAL_LIFECYCLE_STATES = {"archived", "removed"}
 _RETIRED_ARTIFACT_MARKER = "::retired::"
 _PRESERVE_LAYOUT_ACTIONS = {"update_doc", "update_table", "update_source_frame", "skip"}
@@ -50,6 +50,7 @@ _ITEM_HOST_TYPES = {
     "doc": "shape",
     "table": "text",
     "zone": "shape",
+    "phase_separator": "shape",
     "workstream_anchor": "shape",
     "source_frame": "frame",
 }
@@ -149,6 +150,58 @@ def build_sync_plan(
                     fallback_reason=zone_strategy.fallback_reason,
                     degraded_warning=zone_strategy.degraded_warning,
                     status="pending",
+                    deterministic_order=DeterministicOrder(
+                        zone_rank=phase_zone_rank(phase_zone),
+                        workstream_rank=0,
+                        object_rank=0,
+                    ),
+                )
+            )
+        for previous_phase, phase_zone in zip(used_zones, used_zones[1:]):
+            separator_artifact_id = f"phase_separator:{previous_phase}:{phase_zone}"
+            existing_item = manifest.items.get(separator_artifact_id)
+            existing_item = existing_item if _is_reusable_existing_item(existing_item) else None
+            reusable_existing_item = _matching_existing_item(existing_item, "phase_separator")
+            if reusable_existing_item is not None:
+                handled_manifest_ids.add(reusable_existing_item["artifact_id"])
+            elif existing_item is not None:
+                handled_manifest_ids.add(existing_item["artifact_id"])
+                replacement_operations.append(
+                    _build_replacement_operation(
+                        existing_item,
+                        config.removed_item_policy,
+                        strategy=zone_strategy,
+                    )
+                )
+            separator_sha256 = hashlib.sha256(separator_artifact_id.encode("utf-8")).hexdigest()
+            action, status = _resolve_content_action(
+                reusable_existing_item,
+                False,
+                separator_sha256,
+                "phase_separator",
+            )
+            plan.operations.append(
+                PublishOperation(
+                    op_id=separator_artifact_id,
+                    action=action,
+                    item_type="phase_separator",
+                    artifact_sha256=separator_sha256,
+                    title="",
+                    phase=_zone_phase(phase_zone),
+                    phase_zone=phase_zone,
+                    workstream="general",
+                    collaboration_intent="orientation",
+                    artifact_id=separator_artifact_id,
+                    source_artifact_id=separator_artifact_id,
+                    target_key=separator_artifact_id,
+                    existing_item=reusable_existing_item,
+                    object_family=zone_strategy.object_family,
+                    preferred_item_type=zone_strategy.preferred_item_type,
+                    resolved_item_type=zone_strategy.resolved_item_type,
+                    degraded=zone_strategy.degraded,
+                    fallback_reason=zone_strategy.fallback_reason,
+                    degraded_warning=zone_strategy.degraded_warning,
+                    status=status,
                     deterministic_order=DeterministicOrder(
                         zone_rank=phase_zone_rank(phase_zone),
                         workstream_rank=0,

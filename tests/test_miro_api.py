@@ -280,6 +280,99 @@ class MiroApiLayoutTests(unittest.TestCase):
         self.assertLessEqual(zone_top, workstream_top - (layout.phase_column_padding_top - 24.0))
         self.assertGreaterEqual(zone_bottom, frame_bottom + layout.phase_column_padding_bottom)
 
+    def test_phase_separator_is_positioned_between_horizontal_phase_columns(self) -> None:
+        layout = LayoutConfig()
+        operations = [
+            {
+                "op_id": "zone:analysis",
+                "action": "ensure_zone",
+                "item_type": "zone",
+                "phase_zone": "analysis",
+                "workstream": "general",
+            },
+            {
+                "op_id": "phase_separator:analysis:planning",
+                "action": "create_phase_separator",
+                "item_type": "phase_separator",
+                "phase_zone": "planning",
+                "workstream": "general",
+            },
+            {
+                "op_id": "zone:planning",
+                "action": "ensure_zone",
+                "item_type": "zone",
+                "phase_zone": "planning",
+                "workstream": "general",
+            },
+            {
+                "op_id": "workstream:analysis:product",
+                "action": "ensure_workstream_anchor",
+                "item_type": "workstream_anchor",
+                "phase_zone": "analysis",
+                "workstream": "product",
+            },
+            {
+                "op_id": "source_frame:analysis",
+                "action": "create_source_frame",
+                "item_type": "source_frame",
+                "phase_zone": "analysis",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/analysis.md",
+            },
+            {
+                "op_id": "doc:analysis",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "analysis",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/analysis.md",
+                "artifact_id": "_bmad-output/analysis.md#overview",
+                "title": "Analysis / Overview",
+                "content": "Long content\\n" * 40,
+                "heading_level": 1,
+            },
+            {
+                "op_id": "workstream:planning:product",
+                "action": "ensure_workstream_anchor",
+                "item_type": "workstream_anchor",
+                "phase_zone": "planning",
+                "workstream": "product",
+            },
+            {
+                "op_id": "source_frame:planning",
+                "action": "create_source_frame",
+                "item_type": "source_frame",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning.md",
+            },
+            {
+                "op_id": "doc:planning",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning.md",
+                "artifact_id": "_bmad-output/planning.md#overview",
+                "title": "Planning / Overview",
+                "content": "Short content",
+                "heading_level": 1,
+            },
+        ]
+
+        planned = _apply_layout_positions(operations, layout)
+        analysis_zone = planned[0]
+        separator = planned[1]
+        planning_zone = planned[2]
+
+        analysis_right = analysis_zone["planned_position"]["x"] + (analysis_zone["planned_geometry"]["width"] / 2.0)
+        planning_left = planning_zone["planned_position"]["x"] - (planning_zone["planned_geometry"]["width"] / 2.0)
+        separator_x = separator["planned_position"]["x"]
+
+        self.assertGreater(separator_x, analysis_right)
+        self.assertLess(separator_x, planning_left)
+        self.assertEqual(separator["planned_geometry"]["width"], 12.0)
+
     def test_missing_source_frame_update_recreates_frame(self) -> None:
         layout = LayoutConfig()
         operation = {

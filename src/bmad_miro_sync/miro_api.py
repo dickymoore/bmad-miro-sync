@@ -28,6 +28,7 @@ _HOST_ITEM_TYPES = {
     "doc": "shape",
     "table": "text",
     "zone": "shape",
+    "phase_separator": "shape",
     "workstream_anchor": "shape",
     "source_frame": "frame",
 }
@@ -791,7 +792,7 @@ def _artifact_sha256(
         return artifact.get("sha256")
     if existing_item is not None:
         return existing_item.get("artifact_sha256") or existing_item.get("content_fingerprint")
-    if operation.get("item_type") in {"doc", "table", "source_frame"}:
+    if operation.get("item_type") in {"doc", "table", "source_frame", "phase_separator"}:
         raise MiroApiError(f"Missing artifact sha256 for content operation {operation.get('op_id')}.")
     return None
 
@@ -1194,6 +1195,7 @@ def _phase_extents(
 
 def _decorate_phase_columns(operations: list[dict[str, Any]], *, layout: LayoutConfig) -> list[dict[str, Any]]:
     extents = _phase_extents(operations, layout=layout, include_zones=False)
+    phase_order = _ordered_phase_sequence(operations)
     decorated: list[dict[str, Any]] = []
     for operation in operations:
         updated = dict(operation)
@@ -1213,6 +1215,31 @@ def _decorate_phase_columns(operations: list[dict[str, Any]], *, layout: LayoutC
                     "x": left + ((right - left) / 2.0),
                     "y": top + ((bottom - top) / 2.0),
                 }
+        elif updated.get("item_type") == "phase_separator":
+            phase_zone = str(updated.get("phase_zone") or "planning")
+            if phase_zone in phase_order:
+                index = phase_order.index(phase_zone)
+                if index > 0:
+                    previous_phase = phase_order[index - 1]
+                    previous_extent = extents.get(previous_phase)
+                    current_extent = extents.get(phase_zone)
+                    if previous_extent is not None and current_extent is not None:
+                        previous_right = float(previous_extent["max_x"]) + layout.phase_column_padding_x
+                        current_left = float(current_extent["min_x"]) - layout.phase_column_padding_x
+                        top = min(
+                            float(previous_extent["min_y"]) - layout.phase_column_padding_top,
+                            float(current_extent["min_y"]) - layout.phase_column_padding_top,
+                        )
+                        bottom = max(
+                            float(previous_extent["max_y"]) + layout.phase_column_padding_bottom,
+                            float(current_extent["max_y"]) + layout.phase_column_padding_bottom,
+                        )
+                        separator_x = previous_right + ((current_left - previous_right) / 2.0)
+                        updated["planned_geometry"] = {"width": 12.0, "height": bottom - top}
+                        updated["planned_position"] = {
+                            "x": separator_x,
+                            "y": top + ((bottom - top) / 2.0),
+                        }
         decorated.append(updated)
     return decorated
 
@@ -1311,6 +1338,8 @@ def _shape_geometry(
             }
     if operation.get("item_type") == "zone":
         return {"width": layout.zone_width, "height": layout.zone_height}
+    if operation.get("item_type") == "phase_separator":
+        return {"width": 12.0, "height": layout.zone_height}
     if operation.get("item_type") == "workstream_anchor":
         return {
             "width": max(layout.workstream_header_width, _source_group_width(layout) + 120.0),
@@ -1344,13 +1373,24 @@ def _shape_style(operation: dict[str, Any], *, layout: LayoutConfig) -> dict[str
     if item_type == "zone":
         return {
             "fillColor": phase_fill,
-            "fillOpacity": "0.18",
-            "borderColor": _lighten_hex(phase_fill, 0.16),
+            "fillOpacity": "0.34",
+            "borderColor": _lighten_hex(phase_fill, 0.04),
             "borderStyle": "normal",
-            "borderWidth": "2.0",
+            "borderWidth": "2.6",
             "textAlign": "left",
             "textAlignVertical": "top",
             "fontSize": str(int(layout.zone_title_font_size)),
+        }
+    if item_type == "phase_separator":
+        return {
+            "fillColor": _lighten_hex(phase_fill, 0.18),
+            "fillOpacity": "0.72",
+            "borderColor": _lighten_hex(phase_fill, 0.02),
+            "borderStyle": "normal",
+            "borderWidth": "1.0",
+            "textAlign": "center",
+            "textAlignVertical": "middle",
+            "fontSize": "14",
         }
     if item_type == "workstream_anchor":
         return {
@@ -1449,6 +1489,8 @@ def _shape_content_html(operation: dict[str, Any], *, layout: LayoutConfig) -> s
     lines = [f"<p><strong>{title}</strong></p>"]
     if item_type == "zone":
         lines = [f"<p><strong>{phase.replace('_', ' ').title()}</strong></p>", "<p><em>BMAD phase</em></p>"]
+    elif item_type == "phase_separator":
+        lines = ["<p> </p>"]
     elif item_type == "doc":
         lines = _doc_summary_html(operation, layout=layout)
     elif workstream and workstream != "general":
