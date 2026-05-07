@@ -1036,7 +1036,7 @@ planning = "#123456"
             header_payload = next(item for item in doc_payload if item["data"]["content"].startswith("<p><strong>PRD</strong></p>"))
             section_payload = next(item for item in doc_payload if "<strong>Summary</strong>" in item["data"]["content"])
             self.assertEqual(workstream_payload[0]["position"]["x"], 150.0)
-            self.assertEqual(workstream_payload[0]["position"]["y"], -182.0)
+            self.assertEqual(workstream_payload[0]["position"]["y"], 68.0)
             self.assertEqual(workstream_payload[0]["style"]["fillColor"], "#dce6fb")
             self.assertEqual(frame_payload["position"]["x"], 150.0)
             self.assertEqual(frame_payload["geometry"]["width"], 1580.0)

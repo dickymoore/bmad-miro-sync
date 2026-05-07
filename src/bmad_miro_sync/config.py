@@ -13,6 +13,7 @@ class ObjectStrategyConfig:
 
 @dataclass(slots=True, frozen=True)
 class LayoutConfig:
+    phase_axis: str = "horizontal"
     phase_y: dict[str, float] = field(
         default_factory=lambda: {
             "analysis": -1800.0,
@@ -68,6 +69,7 @@ class LayoutConfig:
     zone_width: float = 520.0
     zone_height: float = 84.0
     phase_gap_y: float = 340.0
+    phase_gap_x: float = 760.0
     workstream_header_width: float = 1180.0
     workstream_header_height: float = 108.0
     zone_title_font_size: float = 22.0
@@ -148,6 +150,7 @@ def _resolve_layout_config(layout: object) -> LayoutConfig:
         return LayoutConfig()
     defaults = LayoutConfig()
     return LayoutConfig(
+        phase_axis=_normalize_phase_axis(layout.get("phase_axis"), defaults.phase_axis),
         phase_y=_normalize_float_mapping(layout.get("phase_y"), defaults.phase_y),
         workstream_x=_normalize_float_mapping(layout.get("workstream_x"), defaults.workstream_x),
         phase_colors=_normalize_string_mapping(layout.get("phase_colors"), defaults.phase_colors),
@@ -169,6 +172,7 @@ def _resolve_layout_config(layout: object) -> LayoutConfig:
         zone_width=_normalize_float_value(layout.get("zone_width"), defaults.zone_width, label="layout.zone_width"),
         zone_height=_normalize_float_value(layout.get("zone_height"), defaults.zone_height, label="layout.zone_height"),
         phase_gap_y=_normalize_float_value(layout.get("phase_gap_y"), defaults.phase_gap_y, label="layout.phase_gap_y"),
+        phase_gap_x=_normalize_float_value(layout.get("phase_gap_x"), defaults.phase_gap_x, label="layout.phase_gap_x"),
         workstream_header_width=_normalize_float_value(layout.get("workstream_header_width"), defaults.workstream_header_width, label="layout.workstream_header_width"),
         workstream_header_height=_normalize_float_value(layout.get("workstream_header_height"), defaults.workstream_header_height, label="layout.workstream_header_height"),
         zone_title_font_size=_normalize_float_value(layout.get("zone_title_font_size"), defaults.zone_title_font_size, label="layout.zone_title_font_size"),
@@ -213,6 +217,15 @@ def _normalize_removed_item_policy(value: object) -> str:
     if normalized in {"archive", "remove"}:
         return normalized
     raise ValueError("sync.removed_item_policy must be 'archive' or 'remove'")
+
+
+def _normalize_phase_axis(value: object, default: str) -> str:
+    if not isinstance(value, str):
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"horizontal", "vertical"}:
+        return normalized
+    raise ValueError("layout.phase_axis must be 'horizontal' or 'vertical'")
 
 
 def _normalize_float_mapping(value: object, defaults: dict[str, float]) -> dict[str, float]:

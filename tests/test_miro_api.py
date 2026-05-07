@@ -29,7 +29,7 @@ class _MissingFrameUpdateClient:
 
 
 class MiroApiLayoutTests(unittest.TestCase):
-    def test_phases_stack_by_rendered_content_height(self) -> None:
+    def test_phases_stack_horizontally_by_rendered_content_width_by_default(self) -> None:
         layout = LayoutConfig()
         operations = [
             {
@@ -130,9 +130,93 @@ class MiroApiLayoutTests(unittest.TestCase):
         analysis_frame = planned[4]
         planning_frame = planned[7]
 
-        analysis_bottom = analysis_frame["planned_position"]["y"] + (analysis_frame["planned_geometry"]["height"] / 2.0)
+        analysis_right = analysis_frame["planned_position"]["x"] + (analysis_frame["planned_geometry"]["width"] / 2.0)
+        planning_left = planning_frame["planned_position"]["x"] - (planning_frame["planned_geometry"]["width"] / 2.0)
+        analysis_top = analysis_frame["planned_position"]["y"] - (analysis_frame["planned_geometry"]["height"] / 2.0)
         planning_top = planning_frame["planned_position"]["y"] - (planning_frame["planned_geometry"]["height"] / 2.0)
 
+        self.assertGreaterEqual(planning_left - analysis_right, layout.phase_gap_x)
+        self.assertEqual(planning_top, analysis_top)
+
+    def test_phases_can_stack_vertically_when_configured(self) -> None:
+        layout = LayoutConfig(phase_axis="vertical")
+        operations = [
+            {
+                "op_id": "zone:analysis",
+                "action": "ensure_zone",
+                "item_type": "zone",
+                "phase_zone": "analysis",
+                "workstream": "general",
+            },
+            {
+                "op_id": "zone:planning",
+                "action": "ensure_zone",
+                "item_type": "zone",
+                "phase_zone": "planning",
+                "workstream": "general",
+            },
+            {
+                "op_id": "workstream:analysis:product",
+                "action": "ensure_workstream_anchor",
+                "item_type": "workstream_anchor",
+                "phase_zone": "analysis",
+                "workstream": "product",
+            },
+            {
+                "op_id": "workstream:planning:product",
+                "action": "ensure_workstream_anchor",
+                "item_type": "workstream_anchor",
+                "phase_zone": "planning",
+                "workstream": "product",
+            },
+            {
+                "op_id": "source_frame:analysis-large",
+                "action": "create_source_frame",
+                "item_type": "source_frame",
+                "phase_zone": "analysis",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/analysis-large.md",
+            },
+            {
+                "op_id": "doc:analysis-large",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "analysis",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/analysis-large.md",
+                "artifact_id": "_bmad-output/analysis-large.md#overview",
+                "title": "Analysis / Overview",
+                "content": "Tall content\\n" * 120,
+                "heading_level": 1,
+            },
+            {
+                "op_id": "source_frame:planning-small",
+                "action": "create_source_frame",
+                "item_type": "source_frame",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-small.md",
+            },
+            {
+                "op_id": "doc:planning-small",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-small.md",
+                "artifact_id": "_bmad-output/planning-small.md#overview",
+                "title": "Planning / Overview",
+                "content": "Short content",
+                "heading_level": 1,
+            },
+        ]
+
+        planned = _apply_layout_positions(operations, layout)
+        analysis_frame = planned[4]
+        planning_frame = planned[6]
+
+        analysis_bottom = analysis_frame["planned_position"]["y"] + (analysis_frame["planned_geometry"]["height"] / 2.0)
+        planning_top = planning_frame["planned_position"]["y"] - (planning_frame["planned_geometry"]["height"] / 2.0)
         self.assertGreaterEqual(planning_top - analysis_bottom, layout.phase_gap_y)
 
     def test_missing_source_frame_update_recreates_frame(self) -> None:

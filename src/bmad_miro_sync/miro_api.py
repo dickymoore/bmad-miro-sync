@@ -1101,18 +1101,32 @@ def _stack_phase_positions(operations: list[dict[str, Any]], *, layout: LayoutCo
         return operations
 
     phase_extents = _phase_extents(operations, layout=layout)
-    phase_offsets: dict[str, float] = {}
+    phase_offsets_x: dict[str, float] = {}
+    phase_offsets_y: dict[str, float] = {}
 
     first_phase = phase_order[0]
-    phase_offsets[first_phase] = layout.phase_y.get(first_phase, 0.0)
-
-    for previous_phase, phase_zone in zip(phase_order, phase_order[1:]):
-        previous_offset = phase_offsets[previous_phase]
-        previous_extent = phase_extents.get(previous_phase, {"max_y": 0.0})
-        current_extent = phase_extents.get(phase_zone, {"min_y": 0.0})
-        previous_bottom = previous_offset + float(previous_extent["max_y"])
-        current_top = float(current_extent["min_y"])
-        phase_offsets[phase_zone] = previous_bottom + layout.phase_gap_y - current_top
+    if layout.phase_axis == "horizontal":
+        phase_offsets_x[first_phase] = 0.0
+        phase_offsets_y[first_phase] = 0.0
+        for previous_phase, phase_zone in zip(phase_order, phase_order[1:]):
+            previous_offset_x = phase_offsets_x[previous_phase]
+            previous_extent = phase_extents.get(previous_phase, {"max_x": 0.0})
+            current_extent = phase_extents.get(phase_zone, {"min_x": 0.0})
+            previous_right = previous_offset_x + float(previous_extent["max_x"])
+            current_left = float(current_extent["min_x"])
+            phase_offsets_x[phase_zone] = previous_right + layout.phase_gap_x - current_left
+            phase_offsets_y[phase_zone] = 0.0
+    else:
+        phase_offsets_x[first_phase] = 0.0
+        phase_offsets_y[first_phase] = layout.phase_y.get(first_phase, 0.0)
+        for previous_phase, phase_zone in zip(phase_order, phase_order[1:]):
+            previous_offset_y = phase_offsets_y[previous_phase]
+            previous_extent = phase_extents.get(previous_phase, {"max_y": 0.0})
+            current_extent = phase_extents.get(phase_zone, {"min_y": 0.0})
+            previous_bottom = previous_offset_y + float(previous_extent["max_y"])
+            current_top = float(current_extent["min_y"])
+            phase_offsets_y[phase_zone] = previous_bottom + layout.phase_gap_y - current_top
+            phase_offsets_x[phase_zone] = 0.0
 
     shifted_operations: list[dict[str, Any]] = []
     for operation in operations:
@@ -1120,13 +1134,15 @@ def _stack_phase_positions(operations: list[dict[str, Any]], *, layout: LayoutCo
         planned_position = shifted.get("planned_position")
         if (
             isinstance(planned_position, dict)
+            and planned_position.get("x") is not None
             and planned_position.get("y") is not None
             and _is_top_level_operation(shifted)
         ):
             phase_zone = str(shifted.get("phase_zone") or "planning")
             shifted["planned_position"] = {
                 **planned_position,
-                "y": float(planned_position["y"]) + phase_offsets.get(phase_zone, 0.0),
+                "x": float(planned_position["x"]) + phase_offsets_x.get(phase_zone, 0.0),
+                "y": float(planned_position["y"]) + phase_offsets_y.get(phase_zone, 0.0),
             }
         shifted_operations.append(shifted)
     return shifted_operations
@@ -1152,13 +1168,18 @@ def _phase_extents(operations: list[dict[str, Any]], *, layout: LayoutConfig) ->
         if planned_position.get("y") is None:
             continue
         geometry = _shape_geometry(operation, layout=layout)
+        half_width = float(geometry["width"]) / 2.0
         half_height = float(geometry["height"]) / 2.0
+        left = float(planned_position["x"]) - half_width
+        right = float(planned_position["x"]) + half_width
         top = float(planned_position["y"]) - half_height
         bottom = float(planned_position["y"]) + half_height
         phase_zone = str(operation.get("phase_zone") or "planning")
         if phase_zone not in extents:
-            extents[phase_zone] = {"min_y": top, "max_y": bottom}
+            extents[phase_zone] = {"min_x": left, "max_x": right, "min_y": top, "max_y": bottom}
             continue
+        extents[phase_zone]["min_x"] = min(float(extents[phase_zone]["min_x"]), left)
+        extents[phase_zone]["max_x"] = max(float(extents[phase_zone]["max_x"]), right)
         extents[phase_zone]["min_y"] = min(float(extents[phase_zone]["min_y"]), top)
         extents[phase_zone]["max_y"] = max(float(extents[phase_zone]["max_y"]), bottom)
     return extents
