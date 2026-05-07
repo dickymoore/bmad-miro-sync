@@ -104,6 +104,15 @@ Project-local customization lives in `.bmad-miro.toml`.
 - `layout.phase_column_padding_x`
 - `layout.phase_column_padding_top`
 - `layout.phase_column_padding_bottom`
+- `layout.phase_fill_opacity`
+- `layout.phase_border_width`
+- `layout.phase_border_lighten`
+- `layout.phase_border_darken`
+- `layout.phase_separator_width`
+- `layout.phase_separator_fill_opacity`
+- `layout.phase_separator_border_width`
+- `layout.phase_separator_lighten`
+- `layout.phase_separator_border_darken`
 - `layout.doc_width`
 - `layout.content_gap_y`
 - `layout.source_gap_y`
@@ -116,9 +125,6 @@ Project-local customization lives in `.bmad-miro.toml`.
 - `layout.doc_font_size`
 
 ### What is not yet user-configurable
-- phase column opacity
-- separator width/opacity
-- phase border weight
 - major-card vs standard-card styling thresholds
 
-Those are currently renderer defaults in code. They can be promoted into `.bmad-miro.toml` later if needed.
+Those remaining values are still renderer defaults in code and can be promoted later if needed.

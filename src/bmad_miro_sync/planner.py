@@ -90,6 +90,7 @@ def build_sync_plan(
         config_path=str(Path(config_path)),
         manifest_path=config.manifest_path,
         artifacts=discovery.artifacts,
+        discovered_artifacts=discovery.artifacts,
         discovery=discovery.to_report(),
         object_strategies=list(object_strategies.values()),
     )

@@ -52,6 +52,37 @@ stories_table = true
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_discovery_strips_raw_web_payloads_without_inserting_placeholder_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(LEGACY_CONFIG, encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text(
+                "# PRD\n\n"
+                "Visible summary text.\n\n"
+                "<!DOCTYPE html>\n"
+                "<html>\n"
+                "<style>\n"
+                ".com-sec-card-1__icon--pink path{fill:#ed6f78}.com-sec-card-1__icon--pink-light circle{fill:#ffbfbf}\n"
+                "</style>\n"
+                "<body>blocked</body>\n"
+                "```html\n"
+                "<div class=\"waf\">blocked</div>\n"
+                "```\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(root / ".bmad-miro.toml")
+            result = discover_artifacts(root, config)
+
+            self.assertEqual(len(result.artifacts), 1)
+            artifact = result.artifacts[0]
+            self.assertIn("Visible summary text.", artifact.content)
+            self.assertNotIn("<html>", artifact.content)
+            self.assertNotIn("<style>", artifact.content)
+            self.assertNotIn("Raw HTML/CSS payload omitted from Miro sync", artifact.content)
+            self.assertNotIn("Code-heavy block omitted from Miro sync", artifact.content)
+
     def test_generated_readiness_artifacts_use_exact_name_matching(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

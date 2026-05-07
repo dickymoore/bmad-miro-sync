@@ -8,6 +8,7 @@ from typing import Iterable
 
 from .config import SyncConfig
 from .classifier import canonical_source_name, classify_artifact, title_from_path
+from .content_sanitizer import sanitize_markdown_for_miro
 from .manifest import load_manifest
 from .markdown import split_markdown_sections
 from .models import (
@@ -77,6 +78,7 @@ def discover_artifacts(
         slug_to_id = {section.slug: f"{selection.relative_path}#{section.slug}" for section in sections}
         current_artifacts: list[ArtifactRecord] = []
         for section in sections:
+            sanitized_content = sanitize_markdown_for_miro(section.content, include_payload_notes=False)
             section_title = f"{file_title} / {section.title}"
             current_artifacts.append(
                 ArtifactRecord(
@@ -89,8 +91,8 @@ def discover_artifacts(
                     workstream=selection.workstream,
                     collaboration_intent=selection.collaboration_intent,
                     relative_path=selection.relative_path,
-                    content=section.content,
-                    sha256=sha256(section.content.encode("utf-8")).hexdigest(),
+                    content=sanitized_content,
+                    sha256=sha256(sanitized_content.encode("utf-8")).hexdigest(),
                     source_type="section",
                     heading_level=section.heading_level,
                     parent_artifact_id=slug_to_id.get(section.parent_slug) if section.parent_slug else None,
@@ -285,7 +287,7 @@ def _load_previous_artifacts(
             manifest_path=manifest_path,
         ):
             continue
-        grouped = _group_previous_artifacts(payload.get("artifacts"))
+        grouped = _group_previous_artifacts(payload.get("discovered_artifacts", payload.get("artifacts")))
         if grouped:
             return grouped
 

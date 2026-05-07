@@ -236,6 +236,7 @@ class SyncPlan:
     manifest_path: str
     operations: list[PublishOperation] = field(default_factory=list)
     artifacts: list[ArtifactRecord] = field(default_factory=list)
+    discovered_artifacts: list[ArtifactRecord] = field(default_factory=list)
     source_groups: list[SourceGroup] = field(default_factory=list)
     discovery: DiscoveryReport = field(default_factory=DiscoveryReport)
     object_strategies: list[ObjectStrategyDecision] = field(default_factory=list)
@@ -251,6 +252,7 @@ class SyncPlan:
             "discovery": self.discovery.to_dict(),
             "object_strategies": [strategy.to_dict() for strategy in self.object_strategies],
             "artifacts": [artifact.to_dict() for artifact in self.artifacts],
+            "discovered_artifacts": [artifact.to_dict() for artifact in self.discovered_artifacts],
             "source_groups": [source_group.to_dict() for source_group in self.source_groups],
             "operations": [operation.to_dict() for operation in self.operations],
         }

@@ -73,6 +73,15 @@ class LayoutConfig:
     phase_column_padding_x: float = 180.0
     phase_column_padding_top: float = 164.0
     phase_column_padding_bottom: float = 128.0
+    phase_fill_opacity: float = 0.34
+    phase_border_width: float = 2.6
+    phase_border_lighten: float = 0.04
+    phase_border_darken: float = 0.18
+    phase_separator_width: float = 12.0
+    phase_separator_fill_opacity: float = 0.72
+    phase_separator_border_width: float = 1.0
+    phase_separator_lighten: float = 0.18
+    phase_separator_border_darken: float = 0.14
     workstream_header_width: float = 1180.0
     workstream_header_height: float = 108.0
     zone_title_font_size: float = 22.0
@@ -179,6 +188,15 @@ def _resolve_layout_config(layout: object) -> LayoutConfig:
         phase_column_padding_x=_normalize_float_value(layout.get("phase_column_padding_x"), defaults.phase_column_padding_x, label="layout.phase_column_padding_x"),
         phase_column_padding_top=_normalize_float_value(layout.get("phase_column_padding_top"), defaults.phase_column_padding_top, label="layout.phase_column_padding_top"),
         phase_column_padding_bottom=_normalize_float_value(layout.get("phase_column_padding_bottom"), defaults.phase_column_padding_bottom, label="layout.phase_column_padding_bottom"),
+        phase_fill_opacity=_normalize_float_value(layout.get("phase_fill_opacity"), defaults.phase_fill_opacity, label="layout.phase_fill_opacity"),
+        phase_border_width=_normalize_float_value(layout.get("phase_border_width"), defaults.phase_border_width, label="layout.phase_border_width"),
+        phase_border_lighten=_normalize_float_value(layout.get("phase_border_lighten"), defaults.phase_border_lighten, label="layout.phase_border_lighten"),
+        phase_border_darken=_normalize_float_value(layout.get("phase_border_darken"), defaults.phase_border_darken, label="layout.phase_border_darken"),
+        phase_separator_width=_normalize_float_value(layout.get("phase_separator_width"), defaults.phase_separator_width, label="layout.phase_separator_width"),
+        phase_separator_fill_opacity=_normalize_float_value(layout.get("phase_separator_fill_opacity"), defaults.phase_separator_fill_opacity, label="layout.phase_separator_fill_opacity"),
+        phase_separator_border_width=_normalize_float_value(layout.get("phase_separator_border_width"), defaults.phase_separator_border_width, label="layout.phase_separator_border_width"),
+        phase_separator_lighten=_normalize_float_value(layout.get("phase_separator_lighten"), defaults.phase_separator_lighten, label="layout.phase_separator_lighten"),
+        phase_separator_border_darken=_normalize_float_value(layout.get("phase_separator_border_darken"), defaults.phase_separator_border_darken, label="layout.phase_separator_border_darken"),
         workstream_header_width=_normalize_float_value(layout.get("workstream_header_width"), defaults.workstream_header_width, label="layout.workstream_header_width"),
         workstream_header_height=_normalize_float_value(layout.get("workstream_header_height"), defaults.workstream_header_height, label="layout.workstream_header_height"),
         zone_title_font_size=_normalize_float_value(layout.get("zone_title_font_size"), defaults.zone_title_font_size, label="layout.zone_title_font_size"),

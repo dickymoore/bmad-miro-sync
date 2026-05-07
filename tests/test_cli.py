@@ -1124,6 +1124,97 @@ planning = "#123456"
             self.assertNotIn(".com-sec-card-1__icon--pink", content)
             self.assertNotIn("<div class=", content)
 
+    def test_end_to_end_publish_from_source_markdown_does_not_emit_raw_html_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath, MIRO_API_TOKEN="test-token")
+            runtime_dir = root / ".bmad-miro-sync" / "run"
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text(
+                "# PRD\n\n"
+                "## Scope\n\n"
+                "Visible summary text.\n\n"
+                "<!DOCTYPE html>\n"
+                "<html>\n"
+                "<style>\n"
+                ".com-sec-card-1__icon--pink path{fill:#ed6f78}.com-sec-card-1__icon--pink-light circle{fill:#ffbfbf}\n"
+                "</style>\n"
+                "<body>\n"
+                "blocked payload\n"
+                "</body>\n"
+                "```html\n"
+                "<div class=\"waf\">blocked</div>\n"
+                "```\n",
+                encoding="utf-8",
+            )
+
+            workflow_result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "bmad_miro_sync",
+                    "run-codex-collaboration-workflow",
+                    "--project-root",
+                    str(root),
+                    "--config",
+                    str(root / ".bmad-miro.toml"),
+                    "--runtime-dir",
+                    str(runtime_dir),
+                    "--stop-after",
+                    "publish",
+                ],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(workflow_result.returncode, 0, workflow_result.stderr)
+
+            server = _MiroApiTestServer(("127.0.0.1", 0))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                publish_result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "bmad_miro_sync",
+                        "publish-direct",
+                        "--project-root",
+                        str(root),
+                        "--config",
+                        str(root / ".bmad-miro.toml"),
+                        "--plan",
+                        str(runtime_dir / "plan.json"),
+                        "--results",
+                        ".bmad-miro-sync/run/results.json",
+                        "--api-base-url",
+                        f"http://127.0.0.1:{server.server_port}",
+                    ],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(publish_result.returncode, 0, publish_result.stderr)
+            bulk_payload = server.calls[2]["body"]
+            content = next(item["data"]["content"] for item in bulk_payload if "<strong>Scope</strong>" in item["data"]["content"])
+            self.assertIn("Visible summary text.", content)
+            self.assertNotIn("Raw HTML/CSS payload omitted from Miro sync", content)
+            self.assertNotIn("Code-heavy block omitted from Miro sync", content)
+            self.assertNotIn("<!DOCTYPE html>", content)
+            self.assertNotIn(".com-sec-card-1__icon--pink", content)
+            self.assertNotIn("<div class=", content)
+
     def test_publish_direct_keeps_failed_results_without_applying_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
