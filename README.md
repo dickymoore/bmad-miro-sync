@@ -158,6 +158,28 @@ delivery = "#7c3aed"
 
 Those settings control the presentation layout for `publish-direct`: phase banners, workstream headers, source header cards, grouped content placement, scaffold colors, and spacing for new items. Existing mapped items still preserve their prior Miro positions on update.
 
+The publish mode is configurable too:
+
+```toml
+[publish]
+analysis = true
+planning = true
+solutioning = true
+implementation = true
+stories_table = true
+card_mode = "hybrid_heading_paragraph_list_cards" # default: "section_summary_cards"
+max_heading_level = 3
+```
+
+`publish.card_mode = "hybrid_heading_paragraph_list_cards"` switches the board into a review-oriented structure:
+
+- source frame
+- section header cards
+- full-text paragraph cards
+- full-text list cards
+
+Use that mode when the board itself needs to be readable enough for stakeholder review without sending people back to the repo to read the source markdown.
+
 ## Browser Feedback Loop
 
 For visual review and rapid iteration, use Playwright MCP rather than Puppeteer MCP.

@@ -27,6 +27,24 @@ implementation = true
 stories_table = true
 """
 
+HYBRID_CONFIG_TEXT = """
+board_url = "https://miro.com/app/board/uXjVGixS6vQ=/"
+source_root = "_bmad-output"
+manifest_path = ".bmad-miro-sync/state.json"
+
+[layout]
+create_phase_frames = true
+
+[publish]
+analysis = true
+planning = true
+solutioning = true
+implementation = true
+stories_table = true
+card_mode = "hybrid_heading_paragraph_list_cards"
+max_heading_level = 3
+"""
+
 
 class PlannerTests(unittest.TestCase):
     def test_plan_orders_zone_and_workstream_scaffolding_before_leaf_content(self) -> None:
@@ -203,6 +221,49 @@ class PlannerTests(unittest.TestCase):
                 ],
                 [0, 1],
             )
+
+    def test_hybrid_card_mode_expands_sections_into_header_and_body_cards(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(HYBRID_CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text(
+                "# PRD\n\n"
+                "## Goals\n\n"
+                "FluidScan should make long-form reading feel manageable.\n\n"
+                "- Keep progress visible.\n"
+                "- Resume instantly.\n\n"
+                "### Risks\n\n"
+                "Long research cards can become visually dense.\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(root / ".bmad-miro.toml")
+            plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
+
+            doc_operations = [
+                operation.artifact_id
+                for operation in plan.operations
+                if operation.item_type == "doc" and not operation.artifact_id.startswith("source_header:")
+            ]
+            self.assertEqual(
+                doc_operations,
+                [
+                    "_bmad-output/planning-artifacts/prd.md#prd",
+                    "_bmad-output/planning-artifacts/prd.md#prd/goals",
+                    "_bmad-output/planning-artifacts/prd.md#prd/goals::paragraph-1",
+                    "_bmad-output/planning-artifacts/prd.md#prd/goals::list-2",
+                    "_bmad-output/planning-artifacts/prd.md#prd/goals/risks",
+                    "_bmad-output/planning-artifacts/prd.md#prd/goals/risks::paragraph-1",
+                ],
+            )
+            block_operation = next(
+                operation
+                for operation in plan.operations
+                if operation.artifact_id == "_bmad-output/planning-artifacts/prd.md#prd/goals::paragraph-1"
+            )
+            self.assertEqual(block_operation.parent_artifact_id, "_bmad-output/planning-artifacts/prd.md#prd/goals")
+            self.assertEqual(block_operation.source_type, "paragraph")
 
     def test_metadata_only_parent_docs_are_not_published(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

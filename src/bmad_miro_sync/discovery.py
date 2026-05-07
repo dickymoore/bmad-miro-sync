@@ -104,7 +104,10 @@ def discover_artifacts(
                     lineage_key=section.lineage_key,
                 )
             )
-        current_artifacts = _publishable_artifacts(current_artifacts)
+        current_artifacts = _publishable_artifacts(
+            current_artifacts,
+            preserve_structural_parents=config.publish_card_mode == "hybrid_heading_paragraph_list_cards",
+        )
         _apply_lineage(current_artifacts, previous_artifacts.get(selection.relative_path, []))
         artifacts.extend(current_artifacts)
 
@@ -245,8 +248,12 @@ def _source_variant_label(source_variant: str) -> str:
     return "whole-document source"
 
 
-def _publishable_artifacts(artifacts: list[ArtifactRecord]) -> list[ArtifactRecord]:
-    publishable_ids = {
+def _publishable_artifacts(
+    artifacts: list[ArtifactRecord],
+    *,
+    preserve_structural_parents: bool,
+) -> list[ArtifactRecord]:
+    contentful_ids = {
         artifact.artifact_id
         for artifact in artifacts
         if _artifact_has_publishable_content(artifact)
@@ -255,17 +262,38 @@ def _publishable_artifacts(artifacts: list[ArtifactRecord]) -> list[ArtifactReco
         artifact.artifact_id: artifact.parent_artifact_id
         for artifact in artifacts
     }
+    publishable_ids = set(contentful_ids)
+    if preserve_structural_parents:
+        for artifact_id in contentful_ids:
+            current = parent_by_artifact_id.get(artifact_id)
+            while current is not None:
+                publishable_ids.add(current)
+                current = parent_by_artifact_id.get(current)
     publishable: list[ArtifactRecord] = []
     for artifact in artifacts:
         if artifact.artifact_id not in publishable_ids:
             continue
-        artifact.parent_artifact_id = _nearest_publishable_parent_id(
-            artifact.parent_artifact_id,
-            publishable_ids,
-            parent_by_artifact_id,
-        )
+        if not preserve_structural_parents:
+            artifact.parent_artifact_id = _nearest_publishable_parent_id(
+                artifact.parent_artifact_id,
+                publishable_ids,
+                parent_by_artifact_id,
+            )
         publishable.append(artifact)
     return publishable
+
+
+def _nearest_publishable_parent_id(
+    parent_artifact_id: str | None,
+    publishable_ids: set[str],
+    parent_by_artifact_id: dict[str, str | None],
+) -> str | None:
+    current = parent_artifact_id
+    while current is not None:
+        if current in publishable_ids:
+            return current
+        current = parent_by_artifact_id.get(current)
+    return None
 
 
 def _artifact_has_publishable_content(artifact: ArtifactRecord) -> bool:
@@ -295,19 +323,6 @@ def _body_has_publishable_content(body: str) -> bool:
             continue
         return True
     return False
-
-
-def _nearest_publishable_parent_id(
-    parent_artifact_id: str | None,
-    publishable_ids: set[str],
-    parent_by_artifact_id: dict[str, str | None],
-) -> str | None:
-    current = parent_artifact_id
-    while current is not None:
-        if current in publishable_ids:
-            return current
-        current = parent_by_artifact_id.get(current)
-    return None
 
 
 def _source_relative_artifact_key(relative_path: str, source_path: str) -> str:

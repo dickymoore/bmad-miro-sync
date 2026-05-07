@@ -110,6 +110,35 @@ class DiscoveryTests(unittest.TestCase):
             self.assertIsNone(goals.parent_artifact_id)
             self.assertIn("Visible goals.", goals.content)
 
+    def test_discovery_keeps_empty_structural_parents_in_hybrid_card_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(
+                LEGACY_CONFIG + 'card_mode = "hybrid_heading_paragraph_list_cards"\nmax_heading_level = 3\n',
+                encoding="utf-8",
+            )
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text(
+                "# PRD\n\n"
+                "## Scope\n\n"
+                "<!DOCTYPE html>\n"
+                "<html>\n"
+                "<style>.payload{display:none}</style>\n"
+                "<body>blocked</body>\n"
+                "</html>\n\n"
+                "### Goals\n\n"
+                "Visible goals.\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(root / ".bmad-miro.toml")
+            result = discover_artifacts(root, config)
+
+            artifact_ids = {artifact.artifact_id for artifact in result.artifacts}
+            self.assertIn("_bmad-output/planning-artifacts/prd.md#prd/scope", artifact_ids)
+            goals = next(artifact for artifact in result.artifacts if artifact.artifact_id.endswith("#prd/scope/goals"))
+            self.assertEqual(goals.parent_artifact_id, "_bmad-output/planning-artifacts/prd.md#prd/scope")
+
     def test_generated_readiness_artifacts_use_exact_name_matching(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

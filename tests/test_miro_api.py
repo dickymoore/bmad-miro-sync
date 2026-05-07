@@ -6,7 +6,7 @@ from bmad_miro_sync.config import LayoutConfig
 from bmad_miro_sync.miro_api import (
     MiroApiError,
     _apply_layout_positions,
-    _doc_summary_html,
+    _doc_card_html,
     _execute_single_operation,
     _result_entry_from_response,
 )
@@ -670,7 +670,7 @@ class MiroApiLayoutTests(unittest.TestCase):
             ),
         }
 
-        lines = _doc_summary_html(operation, layout=layout)
+        lines = _doc_card_html(operation, layout=layout)
 
         self.assertNotIn("Raw HTML/CSS payload omitted", "".join(lines))
         self.assertIn("This is the real summary paragraph.", "".join(lines))
@@ -688,7 +688,7 @@ class MiroApiLayoutTests(unittest.TestCase):
             "content": "<style>.x{color:red}</style>",
         }
 
-        lines = _doc_summary_html(operation, layout=layout)
+        lines = _doc_card_html(operation, layout=layout)
 
         rendered = "".join(lines)
         self.assertNotIn("Raw HTML/CSS payload omitted", rendered)
@@ -713,7 +713,7 @@ class MiroApiLayoutTests(unittest.TestCase):
             ),
         }
 
-        lines = _doc_summary_html(operation, layout=layout)
+        lines = _doc_card_html(operation, layout=layout)
         rendered = "".join(lines)
 
         self.assertNotIn("Raw HTML/CSS payload omitted", rendered)
@@ -733,11 +733,51 @@ class MiroApiLayoutTests(unittest.TestCase):
             "summary_fallback_content": "## Executive Summary\n\nFluidScan is a web application for readers who accumulate worthwhile long-form articles.",
         }
 
-        lines = _doc_summary_html(operation, layout=layout)
+        lines = _doc_card_html(operation, layout=layout)
         rendered = "".join(lines)
 
         self.assertIn("FluidScan is a web application", rendered)
         self.assertNotIn("Raw HTML/CSS payload omitted", rendered)
+
+    def test_hybrid_paragraph_card_renders_full_text_without_summary_chrome(self) -> None:
+        layout = LayoutConfig()
+        paragraph = (
+            "FluidScan should keep the entire review paragraph visible in Miro so collaborators do not need "
+            "to cross-check the repository before leaving comments."
+        )
+        operation = {
+            "item_type": "doc",
+            "artifact_id": "_bmad-output/planning-artifacts/prd.md#prd/goals::paragraph-1",
+            "title": "PRD / Goals",
+            "phase_zone": "planning",
+            "workstream": "product",
+            "heading_level": 2,
+            "source_type": "paragraph",
+            "content": paragraph,
+        }
+
+        rendered = "".join(_doc_card_html(operation, layout=layout))
+
+        self.assertIn(paragraph, rendered)
+        self.assertNotIn("Planning / Product", rendered)
+        self.assertNotIn("…", rendered)
+
+    def test_hybrid_section_header_card_renders_structure_only(self) -> None:
+        layout = LayoutConfig()
+        operation = {
+            "item_type": "doc",
+            "artifact_id": "_bmad-output/planning-artifacts/prd.md#prd/goals",
+            "title": "PRD / Goals",
+            "phase_zone": "planning",
+            "workstream": "product",
+            "heading_level": 2,
+            "source_type": "section_header",
+            "content": "## Goals\n",
+        }
+
+        rendered = "".join(_doc_card_html(operation, layout=layout))
+
+        self.assertEqual(rendered, "<p><strong>Goals</strong></p>")
 
 
 if __name__ == "__main__":

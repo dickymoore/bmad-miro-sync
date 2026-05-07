@@ -8,6 +8,7 @@ import re
 
 from .classifier import phase_zone_rank, workstream_rank
 from .config import SyncConfig
+from .content_blocks import content_body_without_heading, extract_markdown_blocks
 from .discovery import discover_artifacts
 from .manifest import load_manifest
 from .models import ArtifactRecord, DeterministicOrder, ObjectStrategyDecision, PublishOperation, SourceGroup, SyncPlan
@@ -118,9 +119,14 @@ def build_sync_plan(
             plan.warnings.append("Configured publish flags filtered every discovered artifact out of the board plan.")
             return plan
 
-    ordered_artifacts = _expand_oversized_doc_artifacts(_sort_artifacts(artifacts), config, object_strategies, plan.warnings)
+    display_artifacts = _display_artifacts(_sort_artifacts(artifacts), config)
+    ordered_artifacts = _expand_oversized_doc_artifacts(display_artifacts, config, object_strategies, plan.warnings)
     plan.artifacts = ordered_artifacts
-    summary_fallbacks = _summary_fallbacks_by_artifact(ordered_artifacts)
+    summary_fallbacks = (
+        _summary_fallbacks_by_artifact(ordered_artifacts)
+        if config.publish_card_mode == "section_summary_cards"
+        else {}
+    )
     used_zones = _ordered_unique([artifact.phase_zone for artifact in ordered_artifacts])
     used_workstreams = _ordered_unique((artifact.phase_zone, artifact.workstream) for artifact in ordered_artifacts)
     artifact_ranks = _artifact_ranks(ordered_artifacts)
@@ -364,6 +370,7 @@ def build_sync_plan(
                 target_key=f"artifact:{source_header_artifact_id}",
                 container_target_key=f"workstream:{source_group.phase_zones[0]}:{source_group.workstreams[0]}",
                 content=source_subtitle,
+                source_type="source_header",
                 existing_item=reusable_header_existing_item,
                 layout_policy=None if header_action == "update_doc" else _content_layout_policy(header_action, reusable_header_existing_item),
                 layout_snapshot=None if header_action == "update_doc" else (
@@ -439,6 +446,7 @@ def build_sync_plan(
                     reusable_existing_item,
                 ),
                 content=artifact.content if item_type == "doc" else None,
+                source_type=artifact.source_type,
                 summary_fallback_content=summary_fallbacks.get(artifact.artifact_id) if item_type == "doc" else None,
                 columns=columns,
                 rows=rows,
@@ -520,6 +528,12 @@ def _enabled_artifacts(artifacts: list[ArtifactRecord], config: SyncConfig) -> l
     return enabled
 
 
+def _display_artifacts(artifacts: list[ArtifactRecord], config: SyncConfig) -> list[ArtifactRecord]:
+    if config.publish_card_mode != "hybrid_heading_paragraph_list_cards":
+        return artifacts
+    return _expand_hybrid_section_cards(artifacts)
+
+
 def _sort_artifacts(artifacts: list[ArtifactRecord]) -> list[ArtifactRecord]:
     return sorted(
         artifacts,
@@ -528,6 +542,103 @@ def _sort_artifacts(artifacts: list[ArtifactRecord]) -> list[ArtifactRecord]:
             workstream_rank(artifact.workstream),
         ),
     )
+
+
+def _expand_hybrid_section_cards(artifacts: list[ArtifactRecord]) -> list[ArtifactRecord]:
+    child_counts: dict[str, int] = {}
+    for artifact in artifacts:
+        if artifact.parent_artifact_id is None:
+            continue
+        child_counts[artifact.parent_artifact_id] = child_counts.get(artifact.parent_artifact_id, 0) + 1
+
+    expanded: list[ArtifactRecord] = []
+    for artifact in artifacts:
+        body = content_body_without_heading(artifact.content)
+        blocks = extract_markdown_blocks(body)
+        if not blocks and child_counts.get(artifact.artifact_id, 0) <= 0:
+            continue
+        expanded.append(_section_header_artifact(artifact))
+        for index, block in enumerate(blocks, start=1):
+            expanded.append(_section_block_artifact(artifact, block_type=block.block_type, content=block.content, index=index))
+    return expanded
+
+
+def _section_header_artifact(artifact: ArtifactRecord) -> ArtifactRecord:
+    title = artifact.section_title_path[-1] if artifact.section_title_path else artifact.title.rsplit(" / ", 1)[-1]
+    heading_level = max(int(artifact.heading_level or 0), 1)
+    content = f'{"#" * heading_level} {title}'.strip() + "\n"
+    sha_value = hashlib.sha256(f"{artifact.sha256}|section-header|{title}".encode("utf-8")).hexdigest()
+    return ArtifactRecord(
+        artifact_id=artifact.artifact_id,
+        source_artifact_id=artifact.source_artifact_id,
+        kind=artifact.kind,
+        title=artifact.title,
+        phase=artifact.phase,
+        phase_zone=artifact.phase_zone,
+        workstream=artifact.workstream,
+        collaboration_intent=artifact.collaboration_intent,
+        relative_path=artifact.relative_path,
+        content=content,
+        sha256=sha_value,
+        source_type="section_header",
+        heading_level=artifact.heading_level,
+        parent_artifact_id=artifact.parent_artifact_id,
+        section_path=artifact.section_path,
+        section_title_path=artifact.section_title_path,
+        section_slug=artifact.section_slug,
+        section_sibling_index=artifact.section_sibling_index,
+        lineage_key=artifact.lineage_key,
+        lineage_status=artifact.lineage_status,
+        previous_artifact_id=artifact.previous_artifact_id,
+        previous_parent_artifact_id=artifact.previous_parent_artifact_id,
+    )
+
+
+def _section_block_artifact(
+    artifact: ArtifactRecord,
+    *,
+    block_type: str,
+    content: str,
+    index: int,
+) -> ArtifactRecord:
+    block_artifact_id = f"{artifact.artifact_id}::{block_type}-{index}"
+    sha_value = hashlib.sha256(f"{artifact.sha256}|{block_type}|{index}|{content}".encode("utf-8")).hexdigest()
+    return ArtifactRecord(
+        artifact_id=block_artifact_id,
+        source_artifact_id=artifact.source_artifact_id,
+        kind=artifact.kind,
+        title=artifact.title,
+        phase=artifact.phase,
+        phase_zone=artifact.phase_zone,
+        workstream=artifact.workstream,
+        collaboration_intent=artifact.collaboration_intent,
+        relative_path=artifact.relative_path,
+        content=content.strip(),
+        sha256=sha_value,
+        source_type=block_type,
+        heading_level=artifact.heading_level + 1,
+        parent_artifact_id=artifact.artifact_id,
+        section_path=artifact.section_path + (f"{block_type}-{index}",),
+        section_title_path=artifact.section_title_path + (_section_block_title(block_type, index),),
+        section_slug=f"{artifact.section_slug}-{block_type}-{index}",
+        section_sibling_index=index,
+        lineage_key=sha_value,
+        lineage_status="new",
+        previous_artifact_id=None,
+        previous_parent_artifact_id=None,
+    )
+
+
+def _section_block_title(block_type: str, index: int) -> str:
+    if block_type == "paragraph":
+        return f"Paragraph {index}"
+    if block_type == "list":
+        return f"List {index}"
+    if block_type == "quote":
+        return f"Quote {index}"
+    if block_type == "table":
+        return f"Table {index}"
+    return f"Block {index}"
 
 
 def _expand_oversized_doc_artifacts(
@@ -864,7 +975,7 @@ def _resolve_object_strategies(config: SyncConfig) -> dict[str, ObjectStrategyDe
 
 def _split_oversized_doc_artifact(artifact: ArtifactRecord) -> list[ArtifactRecord]:
     heading_prefix = "#" * max(int(artifact.heading_level or 0), 1)
-    body = _content_body_without_heading(artifact.content)
+    body = content_body_without_heading(artifact.content)
     parts = _split_markdown_body_to_fit(body, artifact.title, heading_prefix)
     source_digest = hashlib.sha256(artifact.content.encode("utf-8")).hexdigest()[:12]
     fragments: list[ArtifactRecord] = []
@@ -902,19 +1013,6 @@ def _split_oversized_doc_artifact(artifact: ArtifactRecord) -> list[ArtifactReco
         )
 
     return fragments
-
-
-def _content_body_without_heading(content: str) -> str:
-    lines = content.splitlines()
-    started = False
-    for index, line in enumerate(lines):
-        if not started and not line.strip():
-            continue
-        started = True
-        if line.lstrip().startswith("#"):
-            return "\n".join(lines[index + 1 :]).strip()
-        break
-    return content.strip()
 
 
 def _strip_yaml_front_matter(content: str) -> str:
@@ -974,7 +1072,7 @@ def _summary_fallback_candidates(artifact: ArtifactRecord, later_artifacts: list
 
 
 def _has_meaningful_board_summary(content: str) -> bool:
-    body = _content_body_without_heading(_strip_yaml_front_matter(content))
+    body = content_body_without_heading(_strip_yaml_front_matter(content))
     lines = [line.strip() for line in body.splitlines()]
     meaningful_lines: list[str] = []
     for line in lines:

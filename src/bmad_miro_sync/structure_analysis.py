@@ -9,6 +9,7 @@ from statistics import median
 from typing import Any
 
 from .config import SyncConfig
+from .content_blocks import content_body_without_heading, extract_markdown_blocks
 from .content_sanitizer import sanitize_markdown_for_miro
 from .discovery import discover_artifacts
 from .markdown import split_markdown_sections
@@ -184,7 +185,7 @@ def build_structure_analysis(
         section_metrics: list[SectionMetric] = []
         for section in sections:
             sanitized_content = sanitize_markdown_for_miro(section.content, include_payload_notes=False)
-            body = _content_body_without_heading(sanitized_content)
+            body = content_body_without_heading(sanitized_content)
             blocks = _extract_blocks(body)
             paragraph_blocks = [block for block in blocks if block.block_type == "paragraph"]
             list_blocks = [block for block in blocks if block.block_type == "list"]
@@ -476,71 +477,15 @@ def _lost_chars(source: str, rendered: str) -> int:
 
 
 def _extract_blocks(body: str) -> list[BlockMetric]:
-    blocks: list[BlockMetric] = []
-    if not body.strip():
-        return blocks
-    chunks = re.split(r"\n\s*\n", body.strip())
-    for chunk in chunks:
-        lines = [line.rstrip() for line in chunk.splitlines() if line.strip()]
-        if not lines:
-            continue
-        if all(_is_list_line(line) for line in lines):
-            text = " ".join(_strip_list_prefix(line) for line in lines).strip()
-            blocks.append(
-                BlockMetric(
-                    block_type="list",
-                    char_count=len(text),
-                    sentence_count=_sentence_count(text),
-                    item_count=len(lines),
-                )
-            )
-            continue
-        if all(line.lstrip().startswith(">") for line in lines):
-            text = " ".join(line.lstrip()[1:].strip() for line in lines).strip()
-            blocks.append(BlockMetric(block_type="quote", char_count=len(text), sentence_count=_sentence_count(text)))
-            continue
-        if len(lines) >= 2 and all("|" in line for line in lines):
-            text = " ".join(lines).strip()
-            blocks.append(BlockMetric(block_type="table", char_count=len(text), sentence_count=_sentence_count(text)))
-            continue
-        text = re.sub(r"\s+", " ", " ".join(lines)).strip()
-        blocks.append(BlockMetric(block_type="paragraph", char_count=len(text), sentence_count=_sentence_count(text)))
-    return blocks
-
-
-def _is_list_line(line: str) -> bool:
-    stripped = line.lstrip()
-    if stripped.startswith(("- ", "* ", "+ ")):
-        return True
-    return re.match(r"^\d+\.\s+", stripped) is not None
-
-
-def _strip_list_prefix(line: str) -> str:
-    stripped = line.lstrip()
-    if stripped.startswith(("- ", "* ", "+ ")):
-        return stripped[2:].strip()
-    match = re.match(r"^\d+\.\s+(?P<body>.+)$", stripped)
-    if match:
-        return match.group("body").strip()
-    return stripped
-
-
-def _sentence_count(text: str) -> int:
-    candidates = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
-    return len(candidates)
-
-
-def _content_body_without_heading(content: str) -> str:
-    lines = content.splitlines()
-    started = False
-    for index, line in enumerate(lines):
-        if not started and not line.strip():
-            continue
-        started = True
-        if line.lstrip().startswith("#"):
-            return "\n".join(lines[index + 1 :]).strip()
-        break
-    return content.strip()
+    return [
+        BlockMetric(
+            block_type=block.block_type,
+            char_count=len(block.content),
+            sentence_count=block.sentence_count,
+            item_count=block.item_count,
+        )
+        for block in extract_markdown_blocks(body)
+    ]
 
 
 def _body_has_publishable_content(body: str) -> bool:

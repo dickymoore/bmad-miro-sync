@@ -108,6 +108,7 @@ class SyncConfig:
     publish_solutioning: bool = True
     publish_implementation: bool = True
     publish_stories_table: bool = True
+    publish_card_mode: str = "section_summary_cards"
     publish_max_heading_level: int = 2
     removed_item_policy: str = "archive"
 
@@ -149,6 +150,7 @@ def load_config(config_path: str | Path, *, project_root: str | Path | None = No
         publish_solutioning=publish.get("solutioning", True),
         publish_implementation=publish.get("implementation", True),
         publish_stories_table=resolved_strategies.story_summary == "table",
+        publish_card_mode=_normalize_publish_card_mode(publish.get("card_mode", "section_summary_cards")),
         publish_max_heading_level=_normalize_int_value(publish.get("max_heading_level"), 2, label="publish.max_heading_level"),
         removed_item_policy=_normalize_removed_item_policy(sync.get("removed_item_policy", "archive")),
     )
@@ -250,6 +252,17 @@ def _normalize_phase_axis(value: object, default: str) -> str:
     if normalized in {"horizontal", "vertical"}:
         return normalized
     raise ValueError("layout.phase_axis must be 'horizontal' or 'vertical'")
+
+
+def _normalize_publish_card_mode(value: object) -> str:
+    if not isinstance(value, str):
+        return "section_summary_cards"
+    normalized = value.strip().lower()
+    if normalized in {"section_summary_cards", "hybrid_heading_paragraph_list_cards"}:
+        return normalized
+    raise ValueError(
+        "publish.card_mode must be 'section_summary_cards' or 'hybrid_heading_paragraph_list_cards'"
+    )
 
 
 def _normalize_float_mapping(value: object, defaults: dict[str, float]) -> dict[str, float]:

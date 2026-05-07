@@ -931,8 +931,37 @@ def _is_source_header_card(operation: dict[str, Any]) -> bool:
     return isinstance(artifact_id, str) and artifact_id.startswith("source_header:")
 
 
+def _operation_source_type(operation: dict[str, Any]) -> str:
+    source_type = operation.get("source_type")
+    return str(source_type or "section")
+
+
+def _is_section_header_doc_card(operation: dict[str, Any]) -> bool:
+    return (
+        operation.get("item_type") == "doc"
+        and not _is_source_header_card(operation)
+        and _operation_source_type(operation) == "section_header"
+    )
+
+
+def _is_body_block_doc_card(operation: dict[str, Any]) -> bool:
+    return (
+        operation.get("item_type") == "doc"
+        and _operation_source_type(operation) in {"paragraph", "list", "quote", "table"}
+    )
+
+
+def _is_list_block_doc_card(operation: dict[str, Any]) -> bool:
+    return (
+        operation.get("item_type") == "doc"
+        and _operation_source_type(operation) == "list"
+    )
+
+
 def _is_major_doc_card(operation: dict[str, Any]) -> bool:
     if operation.get("item_type") != "doc" or _is_source_header_card(operation):
+        return False
+    if _is_section_header_doc_card(operation) or _is_body_block_doc_card(operation):
         return False
     return int(operation.get("heading_level") or 0) <= 1
 
@@ -953,6 +982,13 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
     source_frames: dict[tuple[str, str, str], dict[str, Any]] = {}
     source_frame_indices: dict[tuple[str, str, str], int] = {}
     source_header_indices: dict[tuple[str, str, str], int] = {}
+    artifact_parent_lookup = {
+        str(operation.get("artifact_id")): operation.get("parent_artifact_id")
+        for operation in operations
+        if isinstance(operation.get("artifact_id"), str)
+    }
+    artifact_column_by_id: dict[str, int] = {}
+    artifact_group_bottom_by_id: dict[str, float] = {}
     planned_operations: list[dict[str, Any]] = []
 
     for operation in operations:
@@ -1001,22 +1037,38 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
                     planned_frame["planned_geometry"] = frame_meta["geometry"]
                     planned_frame["planned_position"] = frame_meta["position"]
             column_index = min(range(len(frame_meta["column_positions"])), key=lambda idx: frame_meta["column_positions"][idx])
+            artifact_id = str(planned.get("artifact_id") or "")
+            parent_artifact_id = planned.get("parent_artifact_id") if isinstance(planned.get("parent_artifact_id"), str) else None
+            inherited_column = _nearest_artifact_column(parent_artifact_id, artifact_column_by_id, artifact_parent_lookup)
+            if inherited_column is not None:
+                column_index = inherited_column
             current_top = frame_meta["column_positions"][column_index]
+            indent_x = _artifact_indent_x(planned, artifact_parent_lookup, layout=layout)
+            planned_width = _planned_doc_width(planned, indent_x=indent_x, layout=layout)
             current_x = _content_column_x(
                 left_padding=frame_meta["padding_x"],
                 column_index=column_index,
                 column_count=len(frame_meta["column_positions"]),
                 layout=layout,
-            )
+            ) + indent_x
             if _is_split_fragment(planned):
                 current_x += layout.fragment_indent_x / 2.0
+            parent_bottom = _nearest_artifact_group_bottom(parent_artifact_id, artifact_group_bottom_by_id, artifact_parent_lookup)
+            if parent_bottom is not None:
+                current_top = max(current_top, parent_bottom + _content_vertical_gap(planned, layout=layout))
+            planned["planned_geometry"] = {"width": planned_width}
             estimated_height = _estimated_content_height(planned, layout=layout)
+            planned["planned_geometry"] = {"width": planned_width, "height": estimated_height}
             current_y = current_top + (estimated_height / 2.0)
             planned["planned_position"] = {"x": current_x, "y": current_y}
             planned["planned_parent_artifact_id"] = _source_frame_artifact_id(str(planned.get("source_artifact_id") or ""))
-            frame_meta["column_positions"][column_index] = current_top + estimated_height + (
+            next_bottom = current_top + estimated_height
+            frame_meta["column_positions"][column_index] = next_bottom + (
                 layout.fragment_gap_y if _is_split_fragment(planned) else layout.content_gap_y
             )
+            artifact_column_by_id[artifact_id] = column_index
+            for ancestor_artifact_id in _artifact_ancestor_chain(artifact_id, artifact_parent_lookup):
+                artifact_group_bottom_by_id[ancestor_artifact_id] = next_bottom
             frame_meta["max_bottom"] = max(frame_meta["max_bottom"], current_top + estimated_height)
             frame_meta["max_right"] = max(
                 frame_meta["max_right"],
@@ -1284,14 +1336,23 @@ def _estimated_content_height(operation: dict[str, Any], *, layout: LayoutConfig
         return max(layout.min_card_height, 120.0 + (len(rows) * 44.0))
     if _is_source_header_card(operation):
         return _source_header_height(layout)
+    if _is_section_header_doc_card(operation):
+        return max(84.0, min(layout.min_card_height - 40.0, 116.0))
 
     content_html = _shape_content_html(operation, layout=layout) if operation.get("item_type") == "doc" else _operation_content_html(operation)
     plain_text = re.sub(r"<[^>]+>", " ", content_html)
     plain_text = re.sub(r"\s+", " ", plain_text).strip()
+    width_ratio = _content_width(operation, layout=layout) / max(layout.doc_width, 1.0)
+    effective_chars_per_line = max(18.0, layout.chars_per_line * width_ratio)
     estimated_lines = max(
         3,
-        int(max(len(plain_text), 1) / max(layout.chars_per_line, 20.0)),
+        int(max(len(plain_text), 1) / max(effective_chars_per_line, 20.0)),
     )
+    if _is_body_block_doc_card(operation):
+        base_height = 72.0 + (estimated_lines * 24.0)
+        if _is_list_block_doc_card(operation):
+            base_height += 12.0
+        return max(128.0, base_height)
     base_height = 100.0 + (estimated_lines * 24.0)
     if _is_lightweight_doc_card(operation):
         return max(120.0, min(layout.min_card_height - 28.0, 152.0), base_height - 12.0)
@@ -1360,6 +1421,11 @@ def _shape_geometry(
                 "width": _source_group_width(layout),
                 "height": _source_header_height(layout),
             }
+        if _is_section_header_doc_card(operation):
+            return {
+                "width": _content_width(operation, layout=layout, existing_item=existing_item),
+                "height": _estimated_content_height(operation, layout=layout),
+            }
         return {
             "width": _content_width(operation, layout=layout, existing_item=existing_item),
             "height": _estimated_content_height(operation, layout=layout),
@@ -1420,6 +1486,28 @@ def _shape_style(operation: dict[str, Any], *, layout: LayoutConfig) -> dict[str
                 "textAlign": "left",
                 "textAlignVertical": "middle",
                 "fontSize": str(int(layout.source_title_font_size)),
+            }
+        if _is_section_header_doc_card(operation):
+            return {
+                "fillColor": _lighten_hex(accent, 0.88),
+                "fillOpacity": "1.0",
+                "borderColor": _lighten_hex(accent, 0.12),
+                "borderStyle": "normal",
+                "borderWidth": "2.4",
+                "textAlign": "left",
+                "textAlignVertical": "middle",
+                "fontSize": str(int(layout.doc_font_size + 2)),
+            }
+        if _is_body_block_doc_card(operation):
+            return {
+                "fillColor": _lighten_hex(accent, 0.985) if _is_list_block_doc_card(operation) else "#ffffff",
+                "fillOpacity": "1.0",
+                "borderColor": _lighten_hex(accent, 0.46),
+                "borderStyle": "normal",
+                "borderWidth": "1.6",
+                "textAlign": "left",
+                "textAlignVertical": "top",
+                "fontSize": str(int(layout.doc_font_size)),
             }
         if _is_major_doc_card(operation):
             return {
@@ -1498,13 +1586,13 @@ def _shape_content_html(operation: dict[str, Any], *, layout: LayoutConfig) -> s
     elif item_type == "phase_separator":
         lines = ["<p> </p>"]
     elif item_type == "doc":
-        lines = _doc_summary_html(operation, layout=layout)
+        lines = _doc_card_html(operation, layout=layout)
     elif workstream and workstream != "general":
         lines.append(f"<p>{phase.title()} / {workstream.title()}</p>")
     return "".join(lines)
 
 
-def _doc_summary_html(operation: dict[str, Any], *, layout: LayoutConfig) -> list[str]:
+def _doc_card_html(operation: dict[str, Any], *, layout: LayoutConfig) -> list[str]:
     if _is_source_header_card(operation):
         title = html.escape(str(operation.get("title") or ""))
         subtitle = html.escape(str(operation.get("content") or ""))
@@ -1512,6 +1600,11 @@ def _doc_summary_html(operation: dict[str, Any], *, layout: LayoutConfig) -> lis
         if subtitle:
             lines.append(f"<p><em>{subtitle}</em></p>")
         return lines
+    if _is_section_header_doc_card(operation):
+        return [f"<p><strong>{html.escape(_doc_card_title(operation))}</strong></p>"]
+    if _is_body_block_doc_card(operation):
+        content = _sanitize_markdown_for_miro(str(operation.get("content") or ""), include_payload_notes=False)
+        return [_markdown_to_simple_html(content)]
     title = html.escape(_doc_card_title(operation))
     phase = html.escape(str(operation.get("phase_zone") or "").replace("_", " ").title())
     workstream = html.escape(str(operation.get("workstream") or "").title())
@@ -1655,6 +1748,8 @@ def _meaningful_summary_bullets(content: str) -> list[str]:
 def _is_lightweight_doc_card(operation: dict[str, Any]) -> bool:
     if operation.get("item_type") != "doc" or _is_source_header_card(operation):
         return False
+    if _is_section_header_doc_card(operation) or _is_body_block_doc_card(operation):
+        return False
     content = _sanitize_markdown_for_miro(str(operation.get("content") or ""))
     paragraphs = _meaningful_summary_paragraphs(content)
     bullets = _meaningful_summary_bullets(content)
@@ -1674,6 +1769,80 @@ def _truncate_text(value: str, limit: int) -> str:
     if not truncated:
         truncated = normalized[: max(limit - 1, 1)].strip()
     return truncated + "…"
+
+
+def _nearest_artifact_column(
+    parent_artifact_id: str | None,
+    artifact_column_by_id: dict[str, int],
+    artifact_parent_lookup: dict[str, Any],
+) -> int | None:
+    current = parent_artifact_id
+    while isinstance(current, str) and current:
+        if current in artifact_column_by_id:
+            return artifact_column_by_id[current]
+        current = artifact_parent_lookup.get(current)
+    return None
+
+
+def _nearest_artifact_group_bottom(
+    parent_artifact_id: str | None,
+    artifact_group_bottom_by_id: dict[str, float],
+    artifact_parent_lookup: dict[str, Any],
+) -> float | None:
+    current = parent_artifact_id
+    while isinstance(current, str) and current:
+        if current in artifact_group_bottom_by_id:
+            return artifact_group_bottom_by_id[current]
+        current = artifact_parent_lookup.get(current)
+    return None
+
+
+def _artifact_ancestor_chain(
+    artifact_id: str,
+    artifact_parent_lookup: dict[str, Any],
+) -> list[str]:
+    chain: list[str] = []
+    current: str | None = artifact_id
+    while isinstance(current, str) and current:
+        chain.append(current)
+        next_parent = artifact_parent_lookup.get(current)
+        current = next_parent if isinstance(next_parent, str) else None
+    return chain
+
+
+def _artifact_indent_x(
+    operation: dict[str, Any],
+    artifact_parent_lookup: dict[str, Any],
+    *,
+    layout: LayoutConfig,
+) -> float:
+    depth = 0
+    current = operation.get("parent_artifact_id")
+    while isinstance(current, str) and current:
+        depth += 1
+        current = artifact_parent_lookup.get(current)
+    if _is_body_block_doc_card(operation):
+        depth += 1
+    if depth <= 0:
+        return 0.0
+    return min(depth * max(layout.content_gap_x * 0.4, 22.0), 132.0)
+
+
+def _planned_doc_width(operation: dict[str, Any], *, indent_x: float, layout: LayoutConfig) -> float:
+    width = layout.doc_width
+    if _is_section_header_doc_card(operation):
+        width = max(width - (indent_x * 0.35), width * 0.78)
+    elif _is_body_block_doc_card(operation):
+        width = max(width - indent_x - 16.0, width * 0.62)
+    return width
+
+
+def _content_vertical_gap(operation: dict[str, Any], *, layout: LayoutConfig) -> float:
+    if _is_body_block_doc_card(operation):
+        return max(18.0, layout.content_gap_y * 0.45)
+    if _is_section_header_doc_card(operation):
+        return max(28.0, layout.content_gap_y * 0.55)
+    return layout.content_gap_y
 
 
 def _table_operation_html(operation: dict[str, Any]) -> str:
