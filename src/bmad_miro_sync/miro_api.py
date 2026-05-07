@@ -1522,21 +1522,17 @@ def _doc_summary_html(operation: dict[str, Any], *, layout: LayoutConfig) -> lis
 
     paragraphs = _meaningful_summary_paragraphs(content)
     bullets = _meaningful_summary_bullets(content)
-    placeholder_paragraphs = _placeholder_summary_paragraphs(content)
     if not paragraphs and not bullets:
         fallback_content = _sanitize_markdown_for_miro(str(operation.get("summary_fallback_content") or ""))
         if fallback_content:
             paragraphs = _meaningful_summary_paragraphs(fallback_content)
             bullets = _meaningful_summary_bullets(fallback_content)
-            placeholder_paragraphs = _placeholder_summary_paragraphs(fallback_content) or placeholder_paragraphs
     lines = [
         f"<p><strong>{title}</strong></p>",
         f"<p><em>{phase} / {workstream}</em></p>",
     ]
     if paragraphs:
         lines.append(f"<p>{html.escape(_truncate_text(paragraphs[0], paragraph_limit))}</p>")
-    elif placeholder_paragraphs:
-        lines.append(f"<p>{html.escape(_truncate_text(placeholder_paragraphs[0], paragraph_limit))}</p>")
     if bullets:
         for bullet in bullets[:max_bullets]:
             lines.append(f"<p>&bull; {html.escape(_truncate_text(bullet, bullet_limit))}</p>")

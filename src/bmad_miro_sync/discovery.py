@@ -4,6 +4,7 @@ from collections import defaultdict
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 from typing import Iterable
 
 from .config import SyncConfig
@@ -103,6 +104,7 @@ def discover_artifacts(
                     lineage_key=section.lineage_key,
                 )
             )
+        current_artifacts = _publishable_artifacts(current_artifacts)
         _apply_lineage(current_artifacts, previous_artifacts.get(selection.relative_path, []))
         artifacts.extend(current_artifacts)
 
@@ -241,6 +243,71 @@ def _source_variant_label(source_variant: str) -> str:
     if source_variant == "sharded_index":
         return "sharded index"
     return "whole-document source"
+
+
+def _publishable_artifacts(artifacts: list[ArtifactRecord]) -> list[ArtifactRecord]:
+    publishable_ids = {
+        artifact.artifact_id
+        for artifact in artifacts
+        if _artifact_has_publishable_content(artifact)
+    }
+    parent_by_artifact_id = {
+        artifact.artifact_id: artifact.parent_artifact_id
+        for artifact in artifacts
+    }
+    publishable: list[ArtifactRecord] = []
+    for artifact in artifacts:
+        if artifact.artifact_id not in publishable_ids:
+            continue
+        artifact.parent_artifact_id = _nearest_publishable_parent_id(
+            artifact.parent_artifact_id,
+            publishable_ids,
+            parent_by_artifact_id,
+        )
+        publishable.append(artifact)
+    return publishable
+
+
+def _artifact_has_publishable_content(artifact: ArtifactRecord) -> bool:
+    lines = artifact.content.splitlines()
+    started = False
+    for index, line in enumerate(lines):
+        if not started and not line.strip():
+            continue
+        started = True
+        if line.lstrip().startswith("#"):
+            body = "\n".join(lines[index + 1 :]).strip()
+            return _body_has_publishable_content(body)
+        break
+    return _body_has_publishable_content(artifact.content.strip())
+
+
+def _body_has_publishable_content(body: str) -> bool:
+    if not body:
+        return False
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if re.match(r"^\*\*(author|date):\*\*", line, flags=re.IGNORECASE):
+            continue
+        if re.match(r"^[A-Za-z0-9_-]+:\s*$", line):
+            continue
+        return True
+    return False
+
+
+def _nearest_publishable_parent_id(
+    parent_artifact_id: str | None,
+    publishable_ids: set[str],
+    parent_by_artifact_id: dict[str, str | None],
+) -> str | None:
+    current = parent_artifact_id
+    while current is not None:
+        if current in publishable_ids:
+            return current
+        current = parent_by_artifact_id.get(current)
+    return None
 
 
 def _source_relative_artifact_key(relative_path: str, source_path: str) -> str:

@@ -191,7 +191,6 @@ class PlannerTests(unittest.TestCase):
             self.assertEqual(
                 doc_operations,
                 [
-                    "_bmad-output/planning-artifacts/prd.md#prd",
                     "_bmad-output/planning-artifacts/prd.md#prd/zebra",
                     "_bmad-output/planning-artifacts/prd.md#prd/alpha",
                 ],
@@ -202,10 +201,10 @@ class PlannerTests(unittest.TestCase):
                     for operation in plan.operations
                     if operation.item_type == "doc" and not operation.artifact_id.startswith("source_header:")
                 ],
-                [0, 1, 2],
+                [0, 1],
             )
 
-    def test_metadata_only_parent_docs_receive_summary_fallback_from_child_sections(self) -> None:
+    def test_metadata_only_parent_docs_are_not_published(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
@@ -218,19 +217,18 @@ class PlannerTests(unittest.TestCase):
             config = load_config(root / ".bmad-miro.toml")
             plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
 
-            overview = next(
-                operation for operation in plan.operations if operation.artifact_id == "_bmad-output/planning-artifacts/prd.md#overview"
-            )
-            summary = next(
-                operation
+            doc_operations = [
+                operation.artifact_id
                 for operation in plan.operations
-                if operation.artifact_id == "_bmad-output/planning-artifacts/prd.md#product-requirements-document-fluidscan"
+                if operation.item_type == "doc" and not operation.artifact_id.startswith("source_header:")
+            ]
+            self.assertNotIn("_bmad-output/planning-artifacts/prd.md#product-requirements-document-fluidscan", doc_operations)
+            self.assertIn(
+                "_bmad-output/planning-artifacts/prd.md#product-requirements-document-fluidscan/executive-summary",
+                doc_operations,
             )
 
-            self.assertIn("FluidScan is a web application", overview.summary_fallback_content or "")
-            self.assertIn("FluidScan is a web application", summary.summary_fallback_content or "")
-
-    def test_root_level_sparse_cards_use_distinct_fallback_sections(self) -> None:
+    def test_metadata_only_root_sections_do_not_create_sparse_wrapper_cards(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
@@ -249,17 +247,21 @@ class PlannerTests(unittest.TestCase):
             config = load_config(root / ".bmad-miro.toml")
             plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
 
-            overview = next(
-                operation for operation in plan.operations if operation.artifact_id == "_bmad-output/planning-artifacts/prd.md#overview"
-            )
-            summary = next(
-                operation
+            doc_operations = [
+                operation.artifact_id
                 for operation in plan.operations
-                if operation.artifact_id == "_bmad-output/planning-artifacts/prd.md#product-requirements-document-fluidscan"
+                if operation.item_type == "doc" and not operation.artifact_id.startswith("source_header:")
+            ]
+            self.assertNotIn("_bmad-output/planning-artifacts/prd.md#overview", doc_operations)
+            self.assertNotIn("_bmad-output/planning-artifacts/prd.md#product-requirements-document-fluidscan", doc_operations)
+            self.assertIn(
+                "_bmad-output/planning-artifacts/prd.md#product-requirements-document-fluidscan/executive-summary",
+                doc_operations,
             )
-
-            self.assertIn("FluidScan is a web application for readers", overview.summary_fallback_content or "")
-            self.assertIn("FluidScan is classified as a web app", summary.summary_fallback_content or "")
+            self.assertIn(
+                "_bmad-output/planning-artifacts/prd.md#product-requirements-document-fluidscan/project-classification",
+                doc_operations,
+            )
 
     def test_source_frame_titles_prefer_artifact_identity_over_generic_overview_headings(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -318,11 +320,11 @@ class PlannerTests(unittest.TestCase):
             (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
             (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
             doc_path = root / "_bmad-output/planning-artifacts/prd.md"
-            doc_path.write_text("# PRD\n\nBody\n", encoding="utf-8")
+            doc_path.write_text("# PRD\n\n## Goals\n\nBody\n", encoding="utf-8")
 
             config = load_config(root / ".bmad-miro.toml")
             first_plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
-            artifact = next(artifact for artifact in first_plan.artifacts if artifact.artifact_id.endswith("#prd"))
+            artifact = next(artifact for artifact in first_plan.artifacts if artifact.artifact_id.endswith("#prd/goals"))
             results = {
                 "items": [
                     {
@@ -679,14 +681,14 @@ class PlannerTests(unittest.TestCase):
             )
             save_manifest(root, config.manifest_path, manifest)
 
-            doc_path.write_text("# PRD\n\nBody\n", encoding="utf-8")
+            doc_path.write_text("# PRD\n", encoding="utf-8")
             second_plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
             operation = next(op for op in second_plan.operations if op.artifact_id == section.artifact_id)
 
             self.assertEqual(operation.action, "archive_doc")
             self.assertEqual(operation.lifecycle_state, "archived")
             self.assertIsNotNone(operation.existing_item)
-            self.assertEqual(operation.existing_item["item_id"], "doc-2")
+            self.assertEqual(operation.existing_item["item_id"], "doc-1")
 
     def test_missing_manifest_item_respects_remove_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -741,7 +743,7 @@ removed_item_policy = "remove"
             )
             save_manifest(root, config.manifest_path, manifest)
 
-            doc_path.write_text("# PRD\n\nBody\n", encoding="utf-8")
+            doc_path.write_text("# PRD\n", encoding="utf-8")
             second_plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
             operation = next(op for op in second_plan.operations if op.artifact_id == section.artifact_id)
 
@@ -1138,13 +1140,13 @@ required_artifact_classes = ["prd", "ux_design"]
             )
 
             self.assertEqual(goals_operation.action, "update_doc")
-            self.assertEqual(goals_operation.existing_item["item_id"], "doc-2")
+            self.assertEqual(goals_operation.existing_item["item_id"], "doc-1")
             self.assertEqual(goals_operation.layout_policy, "preserve")
             self.assertEqual(
                 goals_operation.layout_snapshot,
                 {
-                    "x": 102,
-                    "y": 202,
+                    "x": 101,
+                    "y": 201,
                     "width": 320,
                     "height": 180,
                     "parent_item_id": "frame-1",

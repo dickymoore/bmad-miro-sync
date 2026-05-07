@@ -676,7 +676,7 @@ class MiroApiLayoutTests(unittest.TestCase):
         self.assertIn("This is the real summary paragraph.", "".join(lines))
         self.assertIn("First bullet", "".join(lines))
 
-    def test_doc_summary_uses_placeholder_when_no_real_content_exists(self) -> None:
+    def test_doc_summary_omits_placeholder_when_no_real_content_exists(self) -> None:
         layout = LayoutConfig()
         operation = {
             "item_type": "doc",
@@ -690,7 +690,35 @@ class MiroApiLayoutTests(unittest.TestCase):
 
         lines = _doc_summary_html(operation, layout=layout)
 
-        self.assertIn("Raw HTML/CSS payload omitted", "".join(lines))
+        rendered = "".join(lines)
+        self.assertNotIn("Raw HTML/CSS payload omitted", rendered)
+        self.assertEqual(rendered, "<p><strong>Summary</strong></p><p><em>Planning / Product</em></p>")
+
+    def test_doc_summary_omits_placeholder_when_only_bullets_are_meaningful(self) -> None:
+        layout = LayoutConfig()
+        operation = {
+            "item_type": "doc",
+            "artifact_id": "_bmad-output/planning-artifacts/prd.md#overview",
+            "title": "PRD",
+            "phase_zone": "planning",
+            "workstream": "product",
+            "heading_level": 1,
+            "content": "\n".join(
+                [
+                    "<style>.x{color:red}</style>",
+                    "",
+                    "- First bullet",
+                    "- Second bullet",
+                ]
+            ),
+        }
+
+        lines = _doc_summary_html(operation, layout=layout)
+        rendered = "".join(lines)
+
+        self.assertNotIn("Raw HTML/CSS payload omitted", rendered)
+        self.assertIn("First bullet", rendered)
+        self.assertIn("Second bullet", rendered)
 
     def test_doc_summary_uses_fallback_content_when_primary_content_is_metadata_only(self) -> None:
         layout = LayoutConfig()

@@ -51,6 +51,12 @@ from .source_status import (
     save_source_status,
     select_source_ids,
 )
+from .structure_analysis import (
+    build_structure_analysis,
+    render_structure_analysis_markdown,
+    summarize_report_metrics,
+    write_structure_analysis,
+)
 from .workflow import (
     DEFAULT_COLLABORATION_REPORT_PATH,
     DEFAULT_RUNTIME_DIR,
@@ -69,6 +75,16 @@ def main() -> int:
     plan_parser = subparsers.add_parser("plan", help="Build a sync plan from BMad outputs.")
     _add_common_args(plan_parser)
     plan_parser.add_argument("--output", help="Write the plan JSON to this path.")
+
+    structure_parser = subparsers.add_parser(
+        "analyze-structure",
+        help="Analyze BMAD markdown structure and estimate board mapping models.",
+    )
+    _add_common_args(structure_parser)
+    structure_parser.add_argument(
+        "--output-dir",
+        help="Repo-local directory for JSON and markdown analysis outputs. When omitted, prints JSON to stdout.",
+    )
 
     source_status_parser = subparsers.add_parser(
         "source-status",
@@ -284,6 +300,36 @@ def main() -> int:
         else:
             json.dump(payload, sys.stdout, indent=2, sort_keys=True)
             sys.stdout.write("\n")
+        return 0
+
+    if args.command == "analyze-structure":
+        project_root = Path(args.project_root).resolve()
+        try:
+            config_path, config = _load_cli_config(project_root, args.config)
+            output_dir = _optional_repo_local_path(project_root, args.output_dir, "--output-dir")
+        except ValueError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 1
+        if output_dir is None:
+            report = build_structure_analysis(project_root, config_path, config)
+            payload = report.to_dict()
+            payload["distribution_summary"] = summarize_report_metrics(report)
+            json.dump(payload, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+            return 0
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        report = write_structure_analysis(
+            project_root,
+            json_output_path=output_dir / "structure-analysis.json",
+            markdown_output_path=output_dir / "structure-analysis.md",
+            config_path=config_path,
+            config=config,
+        )
+        payload = report.to_dict()
+        payload["distribution_summary"] = summarize_report_metrics(report)
+        write_json(output_dir / "structure-analysis.summary.json", payload)
+        sys.stdout.write(render_structure_analysis_markdown(report))
         return 0
 
     if args.command == "source-status":

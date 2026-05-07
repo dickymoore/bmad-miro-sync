@@ -4,6 +4,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
 from pathlib import Path
+import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -1214,6 +1216,176 @@ planning = "#123456"
             self.assertNotIn("<!DOCTYPE html>", content)
             self.assertNotIn(".com-sec-card-1__icon--pink", content)
             self.assertNotIn("<div class=", content)
+
+    def test_end_to_end_publish_skips_placeholder_only_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath, MIRO_API_TOKEN="test-token")
+            runtime_dir = root / ".bmad-miro-sync" / "run"
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/product-brief.md").write_text(
+                "# Product Brief\n\n"
+                "## Scope\n\n"
+                "<!DOCTYPE html>\n"
+                "<html>\n"
+                "<style>.payload{display:none}</style>\n"
+                "<body>blocked payload</body>\n"
+                "</html>\n\n"
+                "## Goals\n\n"
+                "Visible goals text.\n",
+                encoding="utf-8",
+            )
+
+            workflow_result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "bmad_miro_sync",
+                    "run-codex-collaboration-workflow",
+                    "--project-root",
+                    str(root),
+                    "--config",
+                    str(root / ".bmad-miro.toml"),
+                    "--runtime-dir",
+                    str(runtime_dir),
+                    "--stop-after",
+                    "publish",
+                ],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(workflow_result.returncode, 0, workflow_result.stderr)
+
+            server = _MiroApiTestServer(("127.0.0.1", 0))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                publish_result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "bmad_miro_sync",
+                        "publish-direct",
+                        "--project-root",
+                        str(root),
+                        "--config",
+                        str(root / ".bmad-miro.toml"),
+                        "--plan",
+                        str(runtime_dir / "plan.json"),
+                        "--results",
+                        ".bmad-miro-sync/run/results.json",
+                        "--api-base-url",
+                        f"http://127.0.0.1:{server.server_port}",
+                    ],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(publish_result.returncode, 0, publish_result.stderr)
+            bulk_payload = server.calls[2]["body"]
+            contents = [item["data"]["content"] for item in bulk_payload]
+            self.assertTrue(any("Visible goals text." in content for content in contents))
+            self.assertFalse(any("<strong>Scope</strong>" in content for content in contents))
+            self.assertFalse(any("Raw HTML/CSS payload omitted from Miro sync" in content for content in contents))
+            self.assertFalse(any("Code-heavy block omitted from Miro sync" in content for content in contents))
+
+    def test_end_to_end_publish_preserves_deterministically_sampled_source_sentences(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath, MIRO_API_TOKEN="test-token")
+            runtime_dir = root / ".bmad-miro-sync" / "run"
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            source_text = (
+                "# Product Brief\n\n"
+                "## Product Intent\n\n"
+                "FluidScan helps people finish worthwhile long-form reading.\n"
+                "The first release focuses on clarity over breadth.\n\n"
+                "## Reader Context\n\n"
+                "Most readers arrive with saved articles they rarely complete.\n"
+                "The product should reduce backlog guilt without adding ceremony.\n\n"
+                "## Core Experience\n\n"
+                "Reading speed controls must feel obvious on first use.\n"
+                "Progress should remain visible during every session.\n"
+                "Session recovery should feel immediate after interruptions.\n"
+            )
+            (root / "_bmad-output/planning-artifacts/product-brief.md").write_text(source_text, encoding="utf-8")
+            sampled_sentences = _sample_meaningful_sentences(source_text, seed=7, count=4)
+            self.assertEqual(len(sampled_sentences), 4)
+
+            workflow_result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "bmad_miro_sync",
+                    "run-codex-collaboration-workflow",
+                    "--project-root",
+                    str(root),
+                    "--config",
+                    str(root / ".bmad-miro.toml"),
+                    "--runtime-dir",
+                    str(runtime_dir),
+                    "--stop-after",
+                    "publish",
+                ],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(workflow_result.returncode, 0, workflow_result.stderr)
+
+            server = _MiroApiTestServer(("127.0.0.1", 0))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                publish_result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "bmad_miro_sync",
+                        "publish-direct",
+                        "--project-root",
+                        str(root),
+                        "--config",
+                        str(root / ".bmad-miro.toml"),
+                        "--plan",
+                        str(runtime_dir / "plan.json"),
+                        "--results",
+                        ".bmad-miro-sync/run/results.json",
+                        "--api-base-url",
+                        f"http://127.0.0.1:{server.server_port}",
+                    ],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(publish_result.returncode, 0, publish_result.stderr)
+            bulk_payload = server.calls[2]["body"]
+            rendered_content = "\n".join(item["data"]["content"] for item in bulk_payload)
+            for sentence in sampled_sentences:
+                self.assertIn(sentence, rendered_content)
 
     def test_publish_direct_keeps_failed_results_without_applying_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2634,7 +2806,7 @@ removed_item_policy = "remove"
             )
             self.assertEqual(apply_create.returncode, 0, apply_create.stderr)
 
-            artifact_path.write_text("# PRD\n\nBody\n", encoding="utf-8")
+            artifact_path.write_text("# PRD\n", encoding="utf-8")
             export_result = subprocess.run(
                 [
                     sys.executable,
@@ -2697,7 +2869,7 @@ removed_item_policy = "remove"
             self.assertEqual(apply_remove.returncode, 0, apply_remove.stderr)
             state = json.loads((root / ".bmad-miro-sync/state.json").read_text(encoding="utf-8"))
             removed_item = state["items"][section["artifact_id"]]
-            self.assertEqual(removed_item["item_id"], "doc-2")
+            self.assertEqual(removed_item["item_id"], "doc-1")
             self.assertEqual(removed_item["lifecycle_state"], "removed")
             self.assertEqual(removed_item["execution_status"], "removed")
             self.assertEqual(
@@ -3646,6 +3818,68 @@ class CliCollaborationWorkflowTests(unittest.TestCase):
             self.assertEqual(payload["stages"]["triage-feedback"]["status"], "failed")
             self.assertTrue((root / ".bmad-miro-sync/run/plan.json").exists())
             self.assertTrue((root / "_bmad-output/review-artifacts/miro-comments.md").exists())
+
+
+class CliStructureAnalysisTests(unittest.TestCase):
+    def test_analyze_structure_writes_json_and_markdown_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pythonpath = str(Path(__file__).resolve().parents[1] / "src")
+            env = dict(os.environ, PYTHONPATH=pythonpath)
+            output_dir = root / ".bmad-miro-sync" / "analysis"
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/product-brief.md").write_text(
+                "# Product Brief\n\n"
+                "## Product Intent\n\n"
+                "FluidScan helps people finish worthwhile long-form reading.\n\n"
+                "## Reader Context\n\n"
+                "Most readers arrive with saved articles they rarely complete.\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "bmad_miro_sync",
+                    "analyze-structure",
+                    "--project-root",
+                    str(root),
+                    "--config",
+                    str(root / ".bmad-miro.toml"),
+                    "--output-dir",
+                    str(output_dir),
+                ],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((output_dir / "structure-analysis.json").exists())
+            self.assertTrue((output_dir / "structure-analysis.md").exists())
+            summary = json.loads((output_dir / "structure-analysis.summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["source_count"], 1)
+            self.assertIn("distribution_summary", summary)
+            self.assertIn("recommended_model_id", summary["recommendation"])
+
+def _sample_meaningful_sentences(content: str, *, seed: int, count: int) -> list[str]:
+    stripped = re.sub(r"^#+\s*", "", content, flags=re.MULTILINE)
+    candidates = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", stripped)
+        if sentence.strip()
+        and len(sentence.strip()) >= 24
+        and not sentence.strip().startswith(("-", "*"))
+        and "\n" not in sentence.strip()
+    ]
+    if len(candidates) <= count:
+        return candidates
+    chosen = random.Random(seed).sample(candidates, count)
+    return sorted(chosen, key=candidates.index)
 
 
 if __name__ == "__main__":
