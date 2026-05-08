@@ -264,6 +264,13 @@ class PlannerTests(unittest.TestCase):
             )
             self.assertEqual(block_operation.parent_artifact_id, "_bmad-output/planning-artifacts/prd.md#prd/goals")
             self.assertEqual(block_operation.source_type, "paragraph")
+            container_operation = next(
+                operation
+                for operation in plan.operations
+                if operation.item_type == "section_container"
+                and operation.artifact_id == "section_container:_bmad-output/planning-artifacts/prd.md#prd/goals"
+            )
+            self.assertEqual(container_operation.parent_artifact_id, "_bmad-output/planning-artifacts/prd.md#prd")
 
     def test_metadata_only_parent_docs_are_not_published(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

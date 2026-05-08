@@ -34,6 +34,7 @@ _HOST_ITEM_TYPES = {
     "phase_separator": "shape",
     "workstream_anchor": "shape",
     "source_frame": "frame",
+    "section_container": "shape",
 }
 
 
@@ -951,6 +952,10 @@ def _is_body_block_doc_card(operation: dict[str, Any]) -> bool:
     )
 
 
+def _is_section_container(operation: dict[str, Any]) -> bool:
+    return operation.get("item_type") == "section_container"
+
+
 def _is_list_block_doc_card(operation: dict[str, Any]) -> bool:
     return (
         operation.get("item_type") == "doc"
@@ -982,6 +987,7 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
     source_frames: dict[tuple[str, str, str], dict[str, Any]] = {}
     source_frame_indices: dict[tuple[str, str, str], int] = {}
     source_header_indices: dict[tuple[str, str, str], int] = {}
+    section_container_indices: dict[str, int] = {}
     artifact_parent_lookup = {
         str(operation.get("artifact_id")): operation.get("parent_artifact_id")
         for operation in operations
@@ -1009,6 +1015,8 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
             lane_y[lane_key] = anchor_y + (layout.workstream_header_height / 2.0) + 56.0
         elif planned.get("item_type") == "source_frame":
             source_frame_indices[source_key] = len(planned_operations)
+        elif _is_section_container(planned):
+            section_container_indices[str(planned.get("artifact_id") or "")] = len(planned_operations)
         elif action.startswith(("create_", "ensure_", "update_")) and planned.get("item_type") in {"doc", "table"}:
             if _is_source_header_card(planned):
                 source_header_indices[source_key] = len(planned_operations)
@@ -1110,6 +1118,13 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
         planned["planned_geometry"] = frame_meta["geometry"]
         planned["planned_position"] = frame_meta["position"]
         lane_y[lane_key] = frame_meta["position"]["y"] + (frame_meta["geometry"]["height"] / 2.0) + layout.source_gap_y
+
+    _apply_section_container_layout(
+        planned_operations,
+        section_container_indices=section_container_indices,
+        artifact_parent_lookup=artifact_parent_lookup,
+        layout=layout,
+    )
 
     return _stack_phase_positions(planned_operations, layout=layout)
 
@@ -1404,6 +1419,11 @@ def _shape_geometry(
         return {"width": layout.zone_width, "height": layout.zone_height}
     if operation.get("item_type") == "phase_separator":
         return {"width": layout.phase_separator_width, "height": layout.zone_height}
+    if operation.get("item_type") == "section_container":
+        return {
+            "width": _content_width(operation, layout=layout, existing_item=existing_item),
+            "height": _estimated_content_height(operation, layout=layout),
+        }
     if operation.get("item_type") == "workstream_anchor":
         return {
             "width": max(layout.workstream_header_width, _source_group_width(layout) + 120.0),
@@ -1463,6 +1483,17 @@ def _shape_style(operation: dict[str, Any], *, layout: LayoutConfig) -> dict[str
             "textAlign": "center",
             "textAlignVertical": "middle",
             "fontSize": "14",
+        }
+    if item_type == "section_container":
+        return {
+            "fillColor": _lighten_hex(accent, 0.985),
+            "fillOpacity": "1.0",
+            "borderColor": _lighten_hex(accent, 0.28),
+            "borderStyle": "normal",
+            "borderWidth": "2.2",
+            "textAlign": "left",
+            "textAlignVertical": "top",
+            "fontSize": str(int(layout.doc_font_size)),
         }
     if item_type == "workstream_anchor":
         return {
@@ -1584,6 +1615,8 @@ def _shape_content_html(operation: dict[str, Any], *, layout: LayoutConfig) -> s
     if item_type == "zone":
         lines = [f"<p><strong>{phase.replace('_', ' ').title()}</strong></p>", "<p><em>BMAD phase</em></p>"]
     elif item_type == "phase_separator":
+        lines = ["<p> </p>"]
+    elif item_type == "section_container":
         lines = ["<p> </p>"]
     elif item_type == "doc":
         lines = _doc_card_html(operation, layout=layout)
@@ -1843,6 +1876,105 @@ def _content_vertical_gap(operation: dict[str, Any], *, layout: LayoutConfig) ->
     if _is_section_header_doc_card(operation):
         return max(28.0, layout.content_gap_y * 0.55)
     return layout.content_gap_y
+
+
+def _apply_section_container_layout(
+    planned_operations: list[dict[str, Any]],
+    *,
+    section_container_indices: dict[str, int],
+    artifact_parent_lookup: dict[str, Any],
+    layout: LayoutConfig,
+) -> None:
+    if not section_container_indices:
+        return
+    operation_by_artifact_id = {
+        str(operation.get("artifact_id")): operation
+        for operation in planned_operations
+        if isinstance(operation.get("artifact_id"), str)
+    }
+    for section_container_artifact_id, index in section_container_indices.items():
+        section_artifact_id = section_container_artifact_id.removeprefix("section_container:")
+        member_operations = [
+            operation
+            for operation in planned_operations
+            if _operation_belongs_to_section(operation, section_artifact_id, artifact_parent_lookup)
+        ]
+        if not member_operations:
+            continue
+        bounds = _operations_bounds(member_operations, layout=layout)
+        if bounds is None:
+            continue
+        left, right, top, bottom = bounds
+        padding_x = max(18.0, layout.content_gap_x * 0.35)
+        padding_top = 18.0
+        padding_bottom = 22.0
+        container_operation = planned_operations[index]
+        container_operation["planned_geometry"] = {
+            "width": (right - left) + (padding_x * 2.0),
+            "height": (bottom - top) + padding_top + padding_bottom,
+        }
+        container_operation["planned_position"] = {
+            "x": left + ((right - left) / 2.0),
+            "y": top + ((bottom - top) / 2.0) + ((padding_bottom - padding_top) / 2.0),
+        }
+        container_operation["planned_parent_artifact_id"] = _source_frame_artifact_id(
+            str(container_operation.get("source_artifact_id") or "")
+        )
+        header_operation = operation_by_artifact_id.get(section_artifact_id)
+        if header_operation is not None:
+            header_operation.setdefault("planned_container_artifact_id", section_container_artifact_id)
+
+
+def _operation_belongs_to_section(
+    operation: dict[str, Any],
+    section_artifact_id: str,
+    artifact_parent_lookup: dict[str, Any],
+) -> bool:
+    if _is_section_container(operation):
+        return False
+    artifact_id = operation.get("artifact_id")
+    if not isinstance(artifact_id, str):
+        return False
+    current: str | None = artifact_id
+    while isinstance(current, str) and current:
+        if current == section_artifact_id:
+            return True
+        next_parent = artifact_parent_lookup.get(current)
+        current = next_parent if isinstance(next_parent, str) else None
+    return False
+
+
+def _operations_bounds(
+    operations: list[dict[str, Any]],
+    *,
+    layout: LayoutConfig,
+) -> tuple[float, float, float, float] | None:
+    left: float | None = None
+    right: float | None = None
+    top: float | None = None
+    bottom: float | None = None
+    for operation in operations:
+        planned_position = operation.get("planned_position")
+        if not isinstance(planned_position, dict):
+            continue
+        x = planned_position.get("x")
+        y = planned_position.get("y")
+        if x is None or y is None:
+            continue
+        geometry = _shape_geometry(operation, layout=layout)
+        half_width = float(geometry["width"]) / 2.0
+        half_height = float(geometry["height"]) / 2.0
+        op_left = float(x) - half_width
+        op_right = float(x) + half_width
+        op_top = float(y) - half_height
+        op_bottom = float(y) + half_height
+        left = op_left if left is None else min(left, op_left)
+        right = op_right if right is None else max(right, op_right)
+        top = op_top if top is None else min(top, op_top)
+        bottom = op_bottom if bottom is None else max(bottom, op_bottom)
+    if left is None or right is None or top is None or bottom is None:
+        return None
+    return left, right, top, bottom
 
 
 def _table_operation_html(operation: dict[str, Any]) -> str:

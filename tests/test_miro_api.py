@@ -779,6 +779,123 @@ class MiroApiLayoutTests(unittest.TestCase):
 
         self.assertEqual(rendered, "<p><strong>Goals</strong></p>")
 
+    def test_hybrid_section_container_encloses_header_and_nested_cards(self) -> None:
+        layout = LayoutConfig()
+        operations = [
+            {
+                "op_id": "zone:planning",
+                "action": "ensure_zone",
+                "item_type": "zone",
+                "phase_zone": "planning",
+                "workstream": "general",
+            },
+            {
+                "op_id": "workstream:planning:product",
+                "action": "ensure_workstream_anchor",
+                "item_type": "workstream_anchor",
+                "phase_zone": "planning",
+                "workstream": "product",
+            },
+            {
+                "op_id": "source_frame:prd",
+                "action": "create_source_frame",
+                "item_type": "source_frame",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+            },
+            {
+                "op_id": "doc:source_header:prd",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                "artifact_id": "source_header:_bmad-output/planning-artifacts/prd.md",
+                "title": "PRD",
+                "content": "Product · 2 sections",
+                "heading_level": 0,
+                "source_type": "source_header",
+            },
+            {
+                "op_id": "section_container:goals",
+                "action": "create_section_container",
+                "item_type": "section_container",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                "artifact_id": "section_container:_bmad-output/planning-artifacts/prd.md#prd/goals",
+                "parent_artifact_id": "_bmad-output/planning-artifacts/prd.md#prd",
+                "title": "PRD / Goals",
+            },
+            {
+                "op_id": "doc:goals",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                "artifact_id": "_bmad-output/planning-artifacts/prd.md#prd/goals",
+                "parent_artifact_id": "_bmad-output/planning-artifacts/prd.md#prd",
+                "title": "PRD / Goals",
+                "content": "## Goals\n",
+                "heading_level": 2,
+                "source_type": "section_header",
+            },
+            {
+                "op_id": "doc:goals:p1",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                "artifact_id": "_bmad-output/planning-artifacts/prd.md#prd/goals::paragraph-1",
+                "parent_artifact_id": "_bmad-output/planning-artifacts/prd.md#prd/goals",
+                "title": "PRD / Goals",
+                "content": "FluidScan should make long-form reading feel manageable for busy readers.",
+                "heading_level": 3,
+                "source_type": "paragraph",
+            },
+            {
+                "op_id": "doc:goals:l1",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                "artifact_id": "_bmad-output/planning-artifacts/prd.md#prd/goals::list-2",
+                "parent_artifact_id": "_bmad-output/planning-artifacts/prd.md#prd/goals",
+                "title": "PRD / Goals",
+                "content": "- Keep progress visible.\n- Resume instantly.",
+                "heading_level": 3,
+                "source_type": "list",
+            },
+        ]
+
+        planned = _apply_layout_positions(operations, layout)
+        container = next(op for op in planned if op["item_type"] == "section_container")
+        header = next(op for op in planned if op.get("source_type") == "section_header")
+        paragraph = next(op for op in planned if op.get("source_type") == "paragraph")
+        list_block = next(op for op in planned if op.get("source_type") == "list")
+
+        def bounds(op):
+            pos = op["planned_position"]
+            geo = op["planned_geometry"]
+            return (
+                pos["x"] - (geo["width"] / 2.0),
+                pos["x"] + (geo["width"] / 2.0),
+                pos["y"] - (geo["height"] / 2.0),
+                pos["y"] + (geo["height"] / 2.0),
+            )
+
+        c_left, c_right, c_top, c_bottom = bounds(container)
+        for op in (header, paragraph, list_block):
+            left, right, top, bottom = bounds(op)
+            self.assertGreaterEqual(left, c_left)
+            self.assertLessEqual(right, c_right)
+            self.assertGreaterEqual(top, c_top)
+            self.assertLessEqual(bottom, c_bottom)
+
 
 if __name__ == "__main__":
     unittest.main()

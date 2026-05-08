@@ -38,15 +38,16 @@ WORKSTREAM_TITLES = {
 }
 
 _CONTENT_ITEM_TYPES = {"doc", "table"}
-_MANAGED_ITEM_TYPES = {"doc", "table", "source_frame", "phase_separator"}
+_MANAGED_ITEM_TYPES = {"doc", "table", "source_frame", "phase_separator", "section_container"}
 _TERMINAL_LIFECYCLE_STATES = {"archived", "removed"}
 _RETIRED_ARTIFACT_MARKER = "::retired::"
-_PRESERVE_LAYOUT_ACTIONS = {"update_doc", "update_table", "update_source_frame", "skip"}
+_PRESERVE_LAYOUT_ACTIONS = {"update_doc", "update_table", "update_source_frame", "update_section_container", "skip"}
 _OBJECT_FAMILY_ARTIFACT_CONTENT = "artifact_content"
 _OBJECT_FAMILY_PHASE_ZONE = "phase_zone_scaffolding"
 _OBJECT_FAMILY_STORY_SUMMARY = "story_summary"
 _OBJECT_FAMILY_WORKSTREAM = "workstream_anchor"
 _OBJECT_FAMILY_SOURCE_FRAME = "source_frame"
+_OBJECT_FAMILY_SECTION_CONTAINER = "section_container"
 _ITEM_HOST_TYPES = {
     "doc": "shape",
     "table": "text",
@@ -54,6 +55,7 @@ _ITEM_HOST_TYPES = {
     "phase_separator": "shape",
     "workstream_anchor": "shape",
     "source_frame": "frame",
+    "section_container": "shape",
 }
 _MAX_DOC_HTML_CHARS = 5800
 _OVERSIZE_DOC_FALLBACK_REASON = (
@@ -251,6 +253,7 @@ def build_sync_plan(
 
     source_groups = _draft_source_groups(ordered_artifacts)
     source_frame_actions: dict[str, str] = {}
+    section_container_digests = _section_container_digests(ordered_artifacts)
     for source_group in source_groups:
         source_frame_strategy = _source_frame_strategy()
         source_title = _source_group_title(source_group, ordered_artifacts)
@@ -402,6 +405,71 @@ def build_sync_plan(
         )
 
     for artifact in ordered_artifacts:
+        if artifact.source_type == "section_header" and config.publish_card_mode == "hybrid_heading_paragraph_list_cards":
+            section_container_artifact_id = _section_container_artifact_id(artifact.artifact_id)
+            section_container_existing_item = manifest.items.get(section_container_artifact_id)
+            section_container_existing_item = (
+                section_container_existing_item if _is_reusable_existing_item(section_container_existing_item) else None
+            )
+            reusable_section_container_item = _matching_existing_item(section_container_existing_item, "section_container")
+            if reusable_section_container_item is not None:
+                handled_manifest_ids.add(reusable_section_container_item["artifact_id"])
+            elif section_container_existing_item is not None:
+                handled_manifest_ids.add(section_container_existing_item["artifact_id"])
+                replacement_operations.append(
+                    _build_replacement_operation(
+                        section_container_existing_item,
+                        config.removed_item_policy,
+                        strategy=_section_container_strategy(),
+                    )
+                )
+            section_container_sha = section_container_digests[artifact.artifact_id]
+            container_action, container_status = _resolve_content_action(
+                reusable_section_container_item,
+                False,
+                section_container_sha,
+                "section_container",
+            )
+            if source_frame_actions.get(artifact.source_artifact_id) == "update_source_frame" and container_action == "skip":
+                container_action = "update_section_container"
+                container_status = "pending"
+            plan.operations.append(
+                PublishOperation(
+                    op_id=f"section_container:{artifact.artifact_id}",
+                    action=container_action,
+                    item_type="section_container",
+                    artifact_sha256=section_container_sha,
+                    title=artifact.title,
+                    phase=artifact.phase,
+                    phase_zone=artifact.phase_zone,
+                    workstream=artifact.workstream,
+                    collaboration_intent=artifact.collaboration_intent,
+                    artifact_id=section_container_artifact_id,
+                    source_artifact_id=artifact.source_artifact_id,
+                    target_key=f"artifact:{section_container_artifact_id}",
+                    container_target_key=_content_container_target_key(
+                        container_action,
+                        artifact.phase_zone,
+                        artifact.workstream,
+                        reusable_section_container_item,
+                    ),
+                    existing_item=reusable_section_container_item,
+                    object_family=_OBJECT_FAMILY_SECTION_CONTAINER,
+                    preferred_item_type="section_container",
+                    resolved_item_type="section_container",
+                    status=container_status,
+                    lifecycle_state="active",
+                    heading_level=artifact.heading_level,
+                    parent_artifact_id=artifact.parent_artifact_id,
+                    deterministic_order=DeterministicOrder(
+                        zone_rank=phase_zone_rank(artifact.phase_zone),
+                        workstream_rank=workstream_rank(artifact.workstream),
+                        object_rank=3,
+                        artifact_rank=artifact_ranks[(artifact.phase_zone, artifact.workstream, artifact.source_artifact_id)],
+                        section_rank=section_ranks[(artifact.source_artifact_id, artifact.artifact_id)],
+                    ),
+                )
+            )
         existing_item, reused_previous_identity = _resolve_existing_item(manifest, artifact)
         resolved_operation = _resolve_artifact_operation(artifact, config, object_strategies)
         operation_strategy = _artifact_operation_strategy(resolved_operation.strategy, artifact)
@@ -754,6 +822,46 @@ def _draft_source_groups(artifacts: list[ArtifactRecord]) -> list[SourceGroup]:
             )
         )
     return source_groups
+
+
+def _section_container_digests(artifacts: list[ArtifactRecord]) -> dict[str, str]:
+    child_map: dict[str, list[ArtifactRecord]] = {}
+    artifact_by_id = {artifact.artifact_id: artifact for artifact in artifacts}
+    for artifact in artifacts:
+        if artifact.parent_artifact_id is None:
+            continue
+        child_map.setdefault(artifact.parent_artifact_id, []).append(artifact)
+
+    digests: dict[str, str] = {}
+    for artifact in artifacts:
+        if artifact.source_type != "section_header":
+            continue
+        digest = hashlib.sha256()
+        digest.update(artifact.artifact_id.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(artifact.sha256.encode("utf-8"))
+        digest.update(b"\0")
+        for descendant in _descendant_artifacts(artifact.artifact_id, child_map, artifact_by_id):
+            digest.update(descendant.artifact_id.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(descendant.sha256.encode("utf-8"))
+            digest.update(b"\0")
+        digests[artifact.artifact_id] = digest.hexdigest()
+    return digests
+
+
+def _descendant_artifacts(
+    artifact_id: str,
+    child_map: dict[str, list[ArtifactRecord]],
+    artifact_by_id: dict[str, ArtifactRecord],
+) -> list[ArtifactRecord]:
+    descendants: list[ArtifactRecord] = []
+    queue = list(child_map.get(artifact_id, []))
+    while queue:
+        child = queue.pop(0)
+        descendants.append(child)
+        queue.extend(child_map.get(child.artifact_id, []))
+    return descendants
 
 
 def _source_sha256_for_artifacts(artifacts: list[ArtifactRecord]) -> str:
@@ -1234,6 +1342,14 @@ def _source_frame_strategy() -> ObjectStrategyDecision:
     )
 
 
+def _section_container_strategy() -> ObjectStrategyDecision:
+    return ObjectStrategyDecision(
+        object_family=_OBJECT_FAMILY_SECTION_CONTAINER,
+        preferred_item_type="section_container",
+        resolved_item_type="section_container",
+    )
+
+
 def _source_group_title(source_group: SourceGroup, artifacts: list[ArtifactRecord]) -> str:
     relative_name = Path(source_group.relative_path).stem.strip()
     lowered_name = relative_name.lower()
@@ -1280,6 +1396,10 @@ def _source_group_subtitle(source_group: SourceGroup) -> str:
 
 def _source_frame_artifact_id(source_artifact_id: str) -> str:
     return f"source:{source_artifact_id}"
+
+
+def _section_container_artifact_id(section_artifact_id: str) -> str:
+    return f"section_container:{section_artifact_id}"
 
 
 def _source_header_artifact_id(source_artifact_id: str) -> str:
