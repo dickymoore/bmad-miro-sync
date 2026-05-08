@@ -62,6 +62,8 @@ class LayoutConfig:
     source_header_height: float = 144.0
     source_content_indent_x: float = 0.0
     source_columns: float = 2.0
+    source_max_columns: float = 4.0
+    source_max_height: float = 4500.0
     fragment_indent_x: float = 150.0
     fragment_gap_y: float = 56.0
     min_card_height: float = 184.0
@@ -179,6 +181,8 @@ def _resolve_layout_config(layout: object) -> LayoutConfig:
         source_header_height=_normalize_float_value(layout.get("source_header_height"), defaults.source_header_height, label="layout.source_header_height"),
         source_content_indent_x=_normalize_float_value(layout.get("source_content_indent_x"), defaults.source_content_indent_x, label="layout.source_content_indent_x"),
         source_columns=_normalize_float_value(layout.get("source_columns"), defaults.source_columns, label="layout.source_columns"),
+        source_max_columns=_normalize_float_value(layout.get("source_max_columns"), defaults.source_max_columns, label="layout.source_max_columns"),
+        source_max_height=_normalize_float_value(layout.get("source_max_height"), defaults.source_max_height, label="layout.source_max_height"),
         fragment_indent_x=_normalize_float_value(layout.get("fragment_indent_x"), defaults.fragment_indent_x, label="layout.fragment_indent_x"),
         fragment_gap_y=_normalize_float_value(layout.get("fragment_gap_y"), defaults.fragment_gap_y, label="layout.fragment_gap_y"),
         min_card_height=_normalize_float_value(layout.get("min_card_height"), defaults.min_card_height, label="layout.min_card_height"),

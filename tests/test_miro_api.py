@@ -9,6 +9,7 @@ from bmad_miro_sync.miro_api import (
     _doc_card_html,
     _execute_single_operation,
     _result_entry_from_response,
+    _shape_kind,
 )
 
 
@@ -895,6 +896,160 @@ class MiroApiLayoutTests(unittest.TestCase):
             self.assertLessEqual(right, c_right)
             self.assertGreaterEqual(top, c_top)
             self.assertLessEqual(bottom, c_bottom)
+
+    def test_source_frame_expands_to_multiple_columns_when_height_budget_exceeded(self) -> None:
+        layout = LayoutConfig(source_columns=1.0, source_max_columns=4.0, source_max_height=900.0, doc_width=520.0)
+        operations = [
+            {
+                "op_id": "zone:planning",
+                "action": "ensure_zone",
+                "item_type": "zone",
+                "phase_zone": "planning",
+                "workstream": "general",
+            },
+            {
+                "op_id": "workstream:planning:product",
+                "action": "ensure_workstream_anchor",
+                "item_type": "workstream_anchor",
+                "phase_zone": "planning",
+                "workstream": "product",
+            },
+            {
+                "op_id": "source_frame:prd",
+                "action": "create_source_frame",
+                "item_type": "source_frame",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+            },
+            {
+                "op_id": "doc:source_header:prd",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                "artifact_id": "source_header:_bmad-output/planning-artifacts/prd.md",
+                "title": "PRD",
+                "content": "Product · 2 sections",
+                "heading_level": 0,
+                "source_type": "source_header",
+            },
+        ]
+        for idx in range(12):
+            operations.append(
+                {
+                    "op_id": f"doc:section:{idx}",
+                    "action": "create_doc",
+                    "item_type": "doc",
+                    "phase_zone": "planning",
+                    "workstream": "product",
+                    "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                    "artifact_id": f"_bmad-output/planning-artifacts/prd.md#section-{idx}",
+                    "parent_artifact_id": "_bmad-output/planning-artifacts/prd.md#prd",
+                    "title": f"Section {idx}",
+                    "content": "## Heading\n\nThis is a substantial paragraph designed to consume enough height to trigger multiple columns in the frame.",
+                    "heading_level": 2,
+                    "source_type": "section_header",
+                }
+            )
+        planned = _apply_layout_positions(operations, layout)
+        cards = [op for op in planned if op.get("source_type") == "section_header"]
+        unique_x = {round(op["planned_position"]["x"], 1) for op in cards}
+        self.assertGreater(len(unique_x), 1)
+        frame = next(op for op in planned if op.get("item_type") == "source_frame")
+        self.assertLess(frame["planned_geometry"]["height"], 2000.0)
+
+    def test_section_container_uses_rectangle_shape(self) -> None:
+        self.assertEqual(_shape_kind({"item_type": "section_container"}), "rectangle")
+        self.assertEqual(_shape_kind({"item_type": "doc"}), "round_rectangle")
+
+    def test_large_section_body_spills_across_multiple_columns(self) -> None:
+        layout = LayoutConfig(source_columns=2.0, source_max_columns=6.0, source_max_height=900.0, doc_width=520.0)
+        operations = [
+            {
+                "op_id": "zone:analysis",
+                "action": "ensure_zone",
+                "item_type": "zone",
+                "phase_zone": "analysis",
+                "workstream": "general",
+            },
+            {
+                "op_id": "workstream:analysis:product",
+                "action": "ensure_workstream_anchor",
+                "item_type": "workstream_anchor",
+                "phase_zone": "analysis",
+                "workstream": "product",
+            },
+            {
+                "op_id": "source_frame:research",
+                "action": "create_source_frame",
+                "item_type": "source_frame",
+                "phase_zone": "analysis",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/research.md",
+            },
+            {
+                "op_id": "doc:source_header:research",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "analysis",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/research.md",
+                "artifact_id": "source_header:_bmad-output/research.md",
+                "title": "Research",
+                "content": "Product · 1 section",
+                "heading_level": 0,
+                "source_type": "source_header",
+            },
+            {
+                "op_id": "section_container:research",
+                "action": "create_section_container",
+                "item_type": "section_container",
+                "phase_zone": "analysis",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/research.md",
+                "artifact_id": "section_container:_bmad-output/research.md#research",
+                "parent_artifact_id": "_bmad-output/research.md#root",
+                "title": "Research",
+            },
+            {
+                "op_id": "doc:research",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "analysis",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/research.md",
+                "artifact_id": "_bmad-output/research.md#research",
+                "parent_artifact_id": "_bmad-output/research.md#root",
+                "title": "Research",
+                "content": "## Research\n",
+                "heading_level": 2,
+                "source_type": "section_header",
+            },
+        ]
+        for idx in range(16):
+            operations.append(
+                {
+                    "op_id": f"doc:research:p{idx}",
+                    "action": "create_doc",
+                    "item_type": "doc",
+                    "phase_zone": "analysis",
+                    "workstream": "product",
+                    "source_artifact_id": "_bmad-output/research.md",
+                    "artifact_id": f"_bmad-output/research.md#research::paragraph-{idx}",
+                    "parent_artifact_id": "_bmad-output/research.md#research",
+                    "title": "Research",
+                    "content": "This is a substantial paragraph designed to consume enough vertical space that the section body must wrap into additional columns for review readability.",
+                    "heading_level": 3,
+                    "source_type": "paragraph",
+                }
+            )
+
+        planned = _apply_layout_positions(operations, layout)
+        body_cards = [op for op in planned if op.get("source_type") == "paragraph"]
+        unique_x = {round(op["planned_position"]["x"], 1) for op in body_cards}
+        self.assertGreater(len(unique_x), 1)
 
 
 if __name__ == "__main__":

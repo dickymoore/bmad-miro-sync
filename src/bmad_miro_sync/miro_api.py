@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import html
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -462,7 +463,7 @@ def _create_payload_for_operation(
             "type": "shape",
             "data": {
                 "content": _shape_content_html(operation, layout=layout),
-                "shape": "round_rectangle",
+                "shape": _shape_kind(operation),
             },
             "position": _position_payload(operation, layout=layout, index=index),
             "geometry": _shape_geometry(operation, layout=layout),
@@ -521,7 +522,7 @@ def _update_payload_for_operation(
         payload = {
             "data": {
                 "content": _shape_content_html(operation, layout=layout),
-                "shape": "round_rectangle",
+                "shape": _shape_kind(operation),
             },
             "geometry": _shape_geometry(operation, layout=layout, existing_item=existing_item),
             "style": _shape_style(operation, layout=layout),
@@ -843,6 +844,8 @@ def _initialize_source_frame_meta(
     lane_key: tuple[str, str],
     phase_y: float,
     workstream_x: float,
+    source_key: tuple[str, str, str],
+    source_column_targets: dict[tuple[str, str, str], int],
     layout: LayoutConfig,
 ) -> dict[str, Any]:
     existing_item = operation.get("existing_item") if isinstance(operation.get("existing_item"), dict) else {}
@@ -861,11 +864,13 @@ def _initialize_source_frame_meta(
         if preserve_layout and existing_snapshot.get("y") is not None and existing_snapshot.get("height") is not None
         else lane_start_y + _source_frame_title_clearance(layout)
     )
+    column_count = source_column_targets.get(source_key, _source_column_count(layout))
     return {
         "operation_index": -1,
         "position": {"x": position_x, "y": top_y + (geometry_height / 2.0)},
         "geometry": {"width": geometry_width, "height": geometry_height},
-        "column_positions": [float(_source_frame_top_padding(layout)) for _ in range(_source_column_count(layout))],
+        "column_positions": [float(_source_frame_top_padding(layout)) for _ in range(column_count)],
+        "column_count": column_count,
         "padding_x": _source_frame_padding_x(layout),
         "top_padding": top_padding,
         "bottom_padding": bottom_padding,
@@ -963,6 +968,13 @@ def _is_list_block_doc_card(operation: dict[str, Any]) -> bool:
     )
 
 
+def _shape_kind(operation: dict[str, Any]) -> str:
+    item_type = str(operation.get("item_type") or "")
+    if item_type in {"zone", "phase_separator", "section_container"}:
+        return "rectangle"
+    return "round_rectangle"
+
+
 def _is_major_doc_card(operation: dict[str, Any]) -> bool:
     if operation.get("item_type") != "doc" or _is_source_header_card(operation):
         return False
@@ -988,13 +1000,20 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
     source_frame_indices: dict[tuple[str, str, str], int] = {}
     source_header_indices: dict[tuple[str, str, str], int] = {}
     section_container_indices: dict[str, int] = {}
+    source_column_targets = _estimate_source_column_targets(operations, layout=layout)
     artifact_parent_lookup = {
         str(operation.get("artifact_id")): operation.get("parent_artifact_id")
         for operation in operations
         if isinstance(operation.get("artifact_id"), str)
     }
+    artifact_source_type_lookup = {
+        str(operation.get("artifact_id")): _operation_source_type(operation)
+        for operation in operations
+        if isinstance(operation.get("artifact_id"), str)
+    }
     artifact_column_by_id: dict[str, int] = {}
     artifact_group_bottom_by_id: dict[str, float] = {}
+    section_body_state: dict[str, dict[str, Any]] = {}
     planned_operations: list[dict[str, Any]] = []
 
     for operation in operations:
@@ -1030,6 +1049,8 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
                     lane_key=lane_key,
                     phase_y=phase_y,
                     workstream_x=workstream_x,
+                    source_key=source_key,
+                    source_column_targets=source_column_targets,
                     layout=layout,
                 )
                 frame_meta["operation_index"] = source_frame_indices.get(source_key, -1)
@@ -1047,12 +1068,42 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
             column_index = min(range(len(frame_meta["column_positions"])), key=lambda idx: frame_meta["column_positions"][idx])
             artifact_id = str(planned.get("artifact_id") or "")
             parent_artifact_id = planned.get("parent_artifact_id") if isinstance(planned.get("parent_artifact_id"), str) else None
-            inherited_column = _nearest_artifact_column(parent_artifact_id, artifact_column_by_id, artifact_parent_lookup)
+            inherited_column = None
+            section_artifact_id = None
+            if _is_body_block_doc_card(planned):
+                section_artifact_id = _nearest_section_header_ancestor(
+                    parent_artifact_id,
+                    artifact_parent_lookup,
+                    artifact_source_type_lookup,
+                )
+            if (_is_body_block_doc_card(planned) and section_artifact_id is None) or _is_split_fragment(planned):
+                inherited_column = _nearest_artifact_column(parent_artifact_id, artifact_column_by_id, artifact_parent_lookup)
             if inherited_column is not None:
                 column_index = inherited_column
-            current_top = frame_meta["column_positions"][column_index]
             indent_x = _artifact_indent_x(planned, artifact_parent_lookup, layout=layout)
             planned_width = _planned_doc_width(planned, indent_x=indent_x, layout=layout)
+            estimated_height = _estimated_content_height(planned, layout=layout)
+            if section_artifact_id is not None:
+                column_index, current_top = _resolve_section_body_column(
+                    planned,
+                    section_artifact_id=section_artifact_id,
+                    frame_meta=frame_meta,
+                    artifact_column_by_id=artifact_column_by_id,
+                    artifact_group_bottom_by_id=artifact_group_bottom_by_id,
+                    estimated_height=estimated_height,
+                    layout=layout,
+                    section_body_state=section_body_state,
+                )
+            elif inherited_column is None:
+                column_index = _resolve_column_index_for_operation(
+                    planned,
+                    frame_meta=frame_meta,
+                    estimated_height=estimated_height,
+                    layout=layout,
+                )
+                current_top = frame_meta["column_positions"][column_index]
+            else:
+                current_top = frame_meta["column_positions"][column_index]
             current_x = _content_column_x(
                 left_padding=frame_meta["padding_x"],
                 column_index=column_index,
@@ -1061,11 +1112,12 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
             ) + indent_x
             if _is_split_fragment(planned):
                 current_x += layout.fragment_indent_x / 2.0
-            parent_bottom = _nearest_artifact_group_bottom(parent_artifact_id, artifact_group_bottom_by_id, artifact_parent_lookup)
+            parent_bottom = None
+            if section_artifact_id is None and (_is_body_block_doc_card(planned) or _is_split_fragment(planned)):
+                parent_bottom = _nearest_artifact_group_bottom(parent_artifact_id, artifact_group_bottom_by_id, artifact_parent_lookup)
             if parent_bottom is not None:
                 current_top = max(current_top, parent_bottom + _content_vertical_gap(planned, layout=layout))
             planned["planned_geometry"] = {"width": planned_width}
-            estimated_height = _estimated_content_height(planned, layout=layout)
             planned["planned_geometry"] = {"width": planned_width, "height": estimated_height}
             current_y = current_top + (estimated_height / 2.0)
             planned["planned_position"] = {"x": current_x, "y": current_y}
@@ -1075,7 +1127,16 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
                 layout.fragment_gap_y if _is_split_fragment(planned) else layout.content_gap_y
             )
             artifact_column_by_id[artifact_id] = column_index
-            for ancestor_artifact_id in _artifact_ancestor_chain(artifact_id, artifact_parent_lookup):
+            if section_artifact_id is not None:
+                _update_section_body_state(
+                    section_artifact_id,
+                    column_index=column_index,
+                    next_bottom=next_bottom,
+                    section_body_state=section_body_state,
+                )
+            ancestor_chain = _artifact_ancestor_chain(artifact_id, artifact_parent_lookup)
+            tracked_ancestors = ancestor_chain[:-1] if len(ancestor_chain) > 1 else ancestor_chain
+            for ancestor_artifact_id in tracked_ancestors:
                 artifact_group_bottom_by_id[ancestor_artifact_id] = next_bottom
             frame_meta["max_bottom"] = max(frame_meta["max_bottom"], current_top + estimated_height)
             frame_meta["max_right"] = max(
@@ -1105,6 +1166,8 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
             lane_key=lane_key,
             phase_y=phase_y,
             workstream_x=workstream_x,
+            source_key=source_key,
+            source_column_targets=source_column_targets,
             layout=layout,
         )
         frame_meta["operation_index"] = operation_index
@@ -1321,6 +1384,48 @@ def _is_top_level_operation(operation: dict[str, Any]) -> bool:
 
 def _source_column_count(layout: LayoutConfig) -> int:
     return max(1, int(round(layout.source_columns)))
+
+
+def _source_max_columns(layout: LayoutConfig) -> int:
+    return max(_source_column_count(layout), int(round(layout.source_max_columns)))
+
+
+def _source_max_height(layout: LayoutConfig) -> float:
+    return max(layout.min_card_height * 3.0, float(layout.source_max_height))
+
+
+def _estimate_source_column_targets(
+    operations: list[dict[str, Any]],
+    *,
+    layout: LayoutConfig,
+) -> dict[tuple[str, str, str], int]:
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for operation in operations:
+        if operation.get("item_type") not in {"doc", "table"}:
+            continue
+        if _is_source_header_card(operation):
+            continue
+        phase_zone = str(operation.get("phase_zone") or "planning")
+        workstream = str(operation.get("workstream") or "general")
+        source_id = str(operation.get("source_artifact_id") or operation.get("artifact_id") or "")
+        source_key = (phase_zone, workstream, source_id)
+        groups.setdefault(source_key, []).append(operation)
+
+    targets: dict[tuple[str, str, str], int] = {}
+    min_columns = _source_column_count(layout)
+    max_columns = _source_max_columns(layout)
+    target_height = _source_max_height(layout)
+    base_top = _source_frame_top_padding(layout)
+    base_bottom = _source_frame_bottom_padding(layout)
+    for source_key, ops in groups.items():
+        total_height = 0.0
+        for operation in ops:
+            total_height += _estimated_content_height(operation, layout=layout)
+            total_height += _content_vertical_gap(operation, layout=layout)
+        usable_target = max(layout.min_card_height, target_height - base_top - base_bottom)
+        required = int(max(1.0, math.ceil(total_height / usable_target)))
+        targets[source_key] = max(min_columns, min(max_columns, required))
+    return targets
 
 
 def _source_group_width(layout: LayoutConfig) -> float:
@@ -1830,6 +1935,19 @@ def _nearest_artifact_group_bottom(
     return None
 
 
+def _nearest_section_header_ancestor(
+    parent_artifact_id: str | None,
+    artifact_parent_lookup: dict[str, Any],
+    artifact_source_type_lookup: dict[str, str],
+) -> str | None:
+    current = parent_artifact_id
+    while isinstance(current, str) and current:
+        if artifact_source_type_lookup.get(current) == "section_header":
+            return current
+        current = artifact_parent_lookup.get(current)
+    return None
+
+
 def _artifact_ancestor_chain(
     artifact_id: str,
     artifact_parent_lookup: dict[str, Any],
@@ -1849,13 +1967,13 @@ def _artifact_indent_x(
     *,
     layout: LayoutConfig,
 ) -> float:
+    if _is_section_header_doc_card(operation) or _is_body_block_doc_card(operation):
+        return 0.0
     depth = 0
     current = operation.get("parent_artifact_id")
     while isinstance(current, str) and current:
         depth += 1
         current = artifact_parent_lookup.get(current)
-    if _is_body_block_doc_card(operation):
-        depth += 1
     if depth <= 0:
         return 0.0
     return min(depth * max(layout.content_gap_x * 0.4, 22.0), 132.0)
@@ -1923,6 +2041,97 @@ def _apply_section_container_layout(
         header_operation = operation_by_artifact_id.get(section_artifact_id)
         if header_operation is not None:
             header_operation.setdefault("planned_container_artifact_id", section_container_artifact_id)
+
+
+def _resolve_column_index_for_operation(
+    operation: dict[str, Any],
+    *,
+    frame_meta: dict[str, Any],
+    estimated_height: float,
+    layout: LayoutConfig,
+) -> int:
+    column_positions = frame_meta["column_positions"]
+    column_index = min(range(len(column_positions)), key=lambda idx: column_positions[idx])
+    current_top = float(column_positions[column_index])
+    limit_bottom = float(frame_meta["top_padding"]) + _source_max_height(layout)
+    vertical_gap = _content_vertical_gap(operation, layout=layout)
+    projected_bottom = current_top + estimated_height
+    can_expand = len(column_positions) < _source_max_columns(layout)
+    if projected_bottom > limit_bottom and can_expand and _should_start_new_column(operation):
+        column_positions.append(float(frame_meta["top_padding"]))
+        column_index = len(column_positions) - 1
+        frame_meta["column_count"] = len(column_positions)
+        return column_index
+    if projected_bottom > limit_bottom and can_expand and current_top > float(frame_meta["top_padding"]) + vertical_gap:
+        column_positions.append(float(frame_meta["top_padding"]))
+        column_index = len(column_positions) - 1
+        frame_meta["column_count"] = len(column_positions)
+    return column_index
+
+
+def _resolve_section_body_column(
+    operation: dict[str, Any],
+    *,
+    section_artifact_id: str,
+    frame_meta: dict[str, Any],
+    artifact_column_by_id: dict[str, int],
+    artifact_group_bottom_by_id: dict[str, float],
+    estimated_height: float,
+    layout: LayoutConfig,
+    section_body_state: dict[str, dict[str, Any]],
+) -> tuple[int, float]:
+    state = section_body_state.get(section_artifact_id)
+    if state is None:
+        header_column = artifact_column_by_id.get(section_artifact_id, 0)
+        header_bottom = artifact_group_bottom_by_id.get(section_artifact_id, frame_meta["top_padding"])
+        body_start_top = header_bottom + _content_vertical_gap(operation, layout=layout)
+        state = {
+            "body_start_top": body_start_top,
+            "columns": [header_column],
+            "next_column_index": header_column + 1,
+            "column_positions": {header_column: body_start_top},
+        }
+        section_body_state[section_artifact_id] = state
+
+    body_start_top = float(state["body_start_top"])
+    columns = list(state["columns"])
+    local_positions = state["column_positions"]
+    best_column = min(
+        columns,
+        key=lambda idx: max(float(frame_meta["column_positions"][idx]), float(local_positions.get(idx, body_start_top))),
+    )
+    current_top = max(float(frame_meta["column_positions"][best_column]), float(local_positions.get(best_column, body_start_top)))
+    projected_bottom = current_top + estimated_height
+    limit_bottom = float(frame_meta["top_padding"]) + _source_max_height(layout)
+
+    if projected_bottom > limit_bottom:
+        next_column_index = int(state["next_column_index"])
+        if next_column_index < len(frame_meta["column_positions"]):
+            best_column = next_column_index
+            state["columns"].append(best_column)
+            state["next_column_index"] = best_column + 1
+            state["column_positions"][best_column] = body_start_top
+            current_top = max(float(frame_meta["column_positions"][best_column]), body_start_top)
+
+    return best_column, current_top
+
+
+def _update_section_body_state(
+    section_artifact_id: str,
+    *,
+    column_index: int,
+    next_bottom: float,
+    section_body_state: dict[str, dict[str, Any]],
+) -> None:
+    state = section_body_state.get(section_artifact_id)
+    if state is None:
+        return
+    state["column_positions"][column_index] = next_bottom
+
+
+def _should_start_new_column(operation: dict[str, Any]) -> bool:
+    source_type = _operation_source_type(operation)
+    return source_type in {"section_header", "paragraph", "list", "quote", "table"}
 
 
 def _operation_belongs_to_section(
