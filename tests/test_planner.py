@@ -254,7 +254,6 @@ class PlannerTests(unittest.TestCase):
                     "_bmad-output/planning-artifacts/prd.md#prd/goals::paragraph-1",
                     "_bmad-output/planning-artifacts/prd.md#prd/goals::list-2",
                     "_bmad-output/planning-artifacts/prd.md#prd/goals/risks",
-                    "_bmad-output/planning-artifacts/prd.md#prd/goals/risks::paragraph-1",
                 ],
             )
             block_operation = next(
@@ -264,6 +263,12 @@ class PlannerTests(unittest.TestCase):
             )
             self.assertEqual(block_operation.parent_artifact_id, "_bmad-output/planning-artifacts/prd.md#prd/goals")
             self.assertEqual(block_operation.source_type, "paragraph")
+            risks_operation = next(
+                operation
+                for operation in plan.operations
+                if operation.artifact_id == "_bmad-output/planning-artifacts/prd.md#prd/goals/risks"
+            )
+            self.assertEqual(risks_operation.source_type, "section_compact")
             container_operation = next(
                 operation
                 for operation in plan.operations
@@ -271,6 +276,140 @@ class PlannerTests(unittest.TestCase):
                 and operation.artifact_id == "section_container:_bmad-output/planning-artifacts/prd.md#prd/goals"
             )
             self.assertEqual(container_operation.parent_artifact_id, "_bmad-output/planning-artifacts/prd.md#prd")
+
+    def test_hybrid_card_mode_compacts_small_section_with_single_list_into_one_card(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(HYBRID_CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text(
+                "# PRD\n\n"
+                "## Recommended Techniques\n\n"
+                "- First Principles Thinking\n"
+                "- Morphological Analysis\n"
+                "- Six Thinking Hats\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(root / ".bmad-miro.toml")
+            plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
+
+            doc_operations = [
+                operation
+                for operation in plan.operations
+                if operation.item_type == "doc" and not operation.artifact_id.startswith("source_header:")
+            ]
+            self.assertEqual(
+                [(operation.artifact_id, operation.source_type) for operation in doc_operations],
+                [
+                    ("_bmad-output/planning-artifacts/prd.md#prd", "section_header"),
+                    ("_bmad-output/planning-artifacts/prd.md#prd/recommended-techniques", "section_compact"),
+                ],
+            )
+            self.assertIn("Morphological Analysis", doc_operations[1].content)
+            self.assertFalse(
+                any(
+                    op.item_type == "section_container"
+                    and op.artifact_id == "section_container:_bmad-output/planning-artifacts/prd.md#prd/recommended-techniques"
+                    for op in plan.operations
+                )
+            )
+
+    def test_hybrid_card_mode_does_not_compact_large_repeated_block_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "_bmad-output/planning-artifacts").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(HYBRID_CONFIG_TEXT, encoding="utf-8")
+            repeated_blocks = "\n\n".join(
+                [
+                    f"**[Category #{index}]**: Concept {index}\n\nThis is a longer explanation for concept {index}."
+                    for index in range(1, 10)
+                ]
+            )
+            (root / "_bmad-output/planning-artifacts/prd.md").write_text(
+                "# PRD\n\n"
+                "## Key Ideas Generated\n\n"
+                f"{repeated_blocks}\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(root / ".bmad-miro.toml")
+            plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
+
+            doc_operations = [
+                operation
+                for operation in plan.operations
+                if operation.item_type == "doc" and not operation.artifact_id.startswith("source_header:")
+            ]
+            self.assertGreater(len(doc_operations), 2)
+            self.assertEqual(doc_operations[0].source_type, "section_header")
+            self.assertTrue(any(op.source_type == "paragraph" for op in doc_operations[1:]))
+
+    def test_hybrid_card_mode_groups_label_and_following_list_within_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "_bmad-output/brainstorming").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(HYBRID_CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/brainstorming/session.md").write_text(
+                "# Brainstorming Session Results\n\n"
+                "## Technique Selection\n\n"
+                "**Approach:** AI-Recommended Techniques\n\n"
+                "**Recommended Techniques:**\n\n"
+                "- **First Principles Thinking:** Clarify what is essential.\n"
+                "- **Morphological Analysis:** Explore the design space.\n"
+                "- **Six Thinking Hats:** Stress-test the strongest concepts.\n\n"
+                "**AI Rationale:** This sequence starts from fundamentals, expands options, then evaluates them.\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(root / ".bmad-miro.toml")
+            plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
+
+            doc_operations = [
+                operation
+                for operation in plan.operations
+                if operation.item_type == "doc" and operation.source_artifact_id.endswith("session.md")
+            ]
+            grouped_operation = next(
+                operation
+                for operation in doc_operations
+                if operation.artifact_id.endswith("technique-selection")
+            )
+            self.assertEqual(grouped_operation.source_type, "section_compact")
+            self.assertIn("**Recommended Techniques:**", grouped_operation.content)
+            self.assertIn("Morphological Analysis", grouped_operation.content)
+            self.assertIn("**AI Rationale:**", grouped_operation.content)
+
+    def test_hybrid_card_mode_groups_label_with_short_paragraph_list_and_follow_up_paragraph(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "_bmad-output/brainstorming").mkdir(parents=True)
+            (root / ".bmad-miro.toml").write_text(HYBRID_CONFIG_TEXT, encoding="utf-8")
+            (root / "_bmad-output/brainstorming/session.md").write_text(
+                "# Brainstorming Session Results\n\n"
+                "## Priority Review\n\n"
+                "**Recommended Approach:**\n\n"
+                "Use a calmer default reading layout so first-time reviewers can orient themselves quickly.\n\n"
+                "- Keep the primary signal obvious.\n"
+                "- Keep follow-on decisions easy to scan.\n\n"
+                "This should remain readable without opening the repo.\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(root / ".bmad-miro.toml")
+            plan = build_sync_plan(root, root / ".bmad-miro.toml", config)
+
+            grouped_operation = next(
+                operation
+                for operation in plan.operations
+                if operation.item_type == "doc"
+                and operation.source_artifact_id.endswith("session.md")
+                and operation.artifact_id.endswith("priority-review")
+            )
+            self.assertEqual(grouped_operation.source_type, "section_compact")
+            self.assertIn("**Recommended Approach:**", grouped_operation.content)
+            self.assertIn("Keep the primary signal obvious", grouped_operation.content)
+            self.assertIn("This should remain readable", grouped_operation.content)
 
     def test_metadata_only_parent_docs_are_not_published(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

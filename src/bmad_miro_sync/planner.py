@@ -48,6 +48,9 @@ _OBJECT_FAMILY_STORY_SUMMARY = "story_summary"
 _OBJECT_FAMILY_WORKSTREAM = "workstream_anchor"
 _OBJECT_FAMILY_SOURCE_FRAME = "source_frame"
 _OBJECT_FAMILY_SECTION_CONTAINER = "section_container"
+_COMPACT_SECTION_MAX_BLOCKS = 2
+_COMPACT_SECTION_MAX_CHARS = 900
+_COMPACT_SECTION_MAX_LIST_ITEMS = 6
 _ITEM_HOST_TYPES = {
     "doc": "shape",
     "table": "text",
@@ -625,10 +628,62 @@ def _expand_hybrid_section_cards(artifacts: list[ArtifactRecord]) -> list[Artifa
         blocks = extract_markdown_blocks(body)
         if not blocks and child_counts.get(artifact.artifact_id, 0) <= 0:
             continue
+        if _should_compact_hybrid_section(artifact, blocks, child_counts.get(artifact.artifact_id, 0)):
+            expanded.append(_compact_section_artifact(artifact, body))
+            continue
         expanded.append(_section_header_artifact(artifact))
         for index, block in enumerate(blocks, start=1):
             expanded.append(_section_block_artifact(artifact, block_type=block.block_type, content=block.content, index=index))
     return expanded
+
+
+def _should_compact_hybrid_section(
+    artifact: ArtifactRecord,
+    blocks: list,
+    child_count: int,
+) -> bool:
+    if child_count > 0 or not blocks:
+        return False
+    if len(blocks) > _COMPACT_SECTION_MAX_BLOCKS:
+        return False
+    total_chars = sum(len(block.content.strip()) for block in blocks)
+    if total_chars > _COMPACT_SECTION_MAX_CHARS:
+        return False
+    list_blocks = [block for block in blocks if block.block_type == "list"]
+    if len(list_blocks) > 1:
+        return False
+    if list_blocks and list_blocks[0].item_count > _COMPACT_SECTION_MAX_LIST_ITEMS:
+        return False
+    return True
+
+
+def _compact_section_artifact(artifact: ArtifactRecord, body: str) -> ArtifactRecord:
+    compact_content = body.strip()
+    sha_value = hashlib.sha256(f"{artifact.sha256}|compact-section|{compact_content}".encode("utf-8")).hexdigest()
+    return ArtifactRecord(
+        artifact_id=artifact.artifact_id,
+        source_artifact_id=artifact.source_artifact_id,
+        kind=artifact.kind,
+        title=artifact.title,
+        phase=artifact.phase,
+        phase_zone=artifact.phase_zone,
+        workstream=artifact.workstream,
+        collaboration_intent=artifact.collaboration_intent,
+        relative_path=artifact.relative_path,
+        content=compact_content,
+        sha256=sha_value,
+        source_type="section_compact",
+        heading_level=artifact.heading_level,
+        parent_artifact_id=artifact.parent_artifact_id,
+        section_path=artifact.section_path,
+        section_title_path=artifact.section_title_path,
+        section_slug=artifact.section_slug,
+        section_sibling_index=artifact.section_sibling_index,
+        lineage_key=artifact.lineage_key,
+        lineage_status=artifact.lineage_status,
+        previous_artifact_id=artifact.previous_artifact_id,
+        previous_parent_artifact_id=artifact.previous_parent_artifact_id,
+    )
 
 
 def _section_header_artifact(artifact: ArtifactRecord) -> ArtifactRecord:
@@ -702,6 +757,8 @@ def _section_block_title(block_type: str, index: int) -> str:
         return f"Paragraph {index}"
     if block_type == "list":
         return f"List {index}"
+    if block_type == "compound":
+        return f"Grouped content {index}"
     if block_type == "quote":
         return f"Quote {index}"
     if block_type == "table":

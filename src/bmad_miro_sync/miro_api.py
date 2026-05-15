@@ -23,9 +23,9 @@ from .miro_auth import DEFAULT_AUTH_PATH, load_repo_auth_token
 DEFAULT_API_BASE_URL = "https://api.miro.com"
 DEFAULT_TOKEN_ENV = "MIRO_API_TOKEN"
 DEFAULT_RESULTS_PATH = ".bmad-miro-sync/run/results.json"
-_BULK_CREATE_LIMIT = 20
+_BULK_CREATE_LIMIT = 8
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
-_MAX_RETRIES = 5
+_MAX_RETRIES = 8
 _SUMMARY_PLACEHOLDERS = frozenset({_CODE_BLOCK_SUMMARY, _HTML_PAYLOAD_SUMMARY})
 _FRAME_HIDDEN_TITLE = "\u2800"
 _HOST_ITEM_TYPES = {
@@ -328,9 +328,51 @@ def _execute_create_batch(
         )
         for index, operation in enumerate(operations)
     ]
+    if _force_single_creates():
+        operation = operations[0]
+        created_items: list[dict[str, Any]] = []
+        for operation in operations:
+            artifact = artifact_index.get(operation.get("artifact_id"))
+            try:
+                result_entry = _execute_single_operation(
+                    client,
+                    board_id=board_id,
+                    board_url=board_url,
+                    operation=operation,
+                    artifact=artifact,
+                    layout=layout,
+                    item_id_by_artifact=item_id_by_artifact,
+                )
+            except MiroApiError as exc:
+                failed = created_items + [_failed_result_entry({}, operation, artifact, str(exc))]
+                return False, str(exc), failed
+            created_items.append(result_entry)
+            time.sleep(_single_create_delay_seconds())
+        return True, None, created_items
     try:
         response_items = client.bulk_create_items(board_id, payload)
     except MiroApiError as exc:
+        if _is_rate_limit_error(exc):
+            created_items: list[dict[str, Any]] = []
+            for operation in operations:
+                artifact = artifact_index.get(operation.get("artifact_id"))
+                try:
+                    result_entry = _execute_single_operation(
+                        client,
+                        board_id=board_id,
+                        board_url=board_url,
+                        operation=operation,
+                        artifact=artifact,
+                        layout=layout,
+                        item_id_by_artifact=item_id_by_artifact,
+                    )
+                except MiroApiError as single_exc:
+                    created_items.append(_failed_result_entry({}, operation, artifact, str(single_exc)))
+                    return False, str(single_exc), created_items
+                created_items.append(result_entry)
+                _record_item_ids(item_id_by_artifact, [result_entry])
+                time.sleep(_single_create_delay_seconds())
+            return True, None, created_items
         failed = [_failed_result_entry({}, operation, artifact_index.get(operation.get("artifact_id")), str(exc)) for operation in operations]
         return False, str(exc), failed
 
@@ -566,6 +608,25 @@ def _build_run_results(
 def _is_missing_item_error(exc: MiroApiError) -> bool:
     message = str(exc)
     return "failed with 404" in message or "\"status\" : 404" in message or "Item not found" in message
+
+
+def _is_rate_limit_error(exc: MiroApiError) -> bool:
+    message = str(exc)
+    return "failed with 429" in message or "\"status\" : 429" in message or "Request rate limit exceeded" in message
+
+
+def _force_single_creates() -> bool:
+    return os.environ.get("MIRO_FORCE_SINGLE_CREATES", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _single_create_delay_seconds() -> float:
+    raw = os.environ.get("MIRO_SINGLE_CREATE_DELAY_SECONDS", "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            pass
+    return 0.18
 
 
 def _result_entry_from_response(
@@ -953,7 +1014,14 @@ def _is_section_header_doc_card(operation: dict[str, Any]) -> bool:
 def _is_body_block_doc_card(operation: dict[str, Any]) -> bool:
     return (
         operation.get("item_type") == "doc"
-        and _operation_source_type(operation) in {"paragraph", "list", "quote", "table"}
+        and _operation_source_type(operation) in {"paragraph", "list", "quote", "table", "compound"}
+    )
+
+
+def _is_compact_section_doc_card(operation: dict[str, Any]) -> bool:
+    return (
+        operation.get("item_type") == "doc"
+        and _operation_source_type(operation) == "section_compact"
     )
 
 
@@ -1188,6 +1256,7 @@ def _apply_layout_positions(operations: list[dict[str, Any]], layout: LayoutConf
         artifact_parent_lookup=artifact_parent_lookup,
         layout=layout,
     )
+    _pack_source_frames_in_lanes(planned_operations, layout=layout)
 
     return _stack_phase_positions(planned_operations, layout=layout)
 
@@ -1458,6 +1527,15 @@ def _estimated_content_height(operation: dict[str, Any], *, layout: LayoutConfig
         return _source_header_height(layout)
     if _is_section_header_doc_card(operation):
         return max(84.0, min(layout.min_card_height - 40.0, 116.0))
+    if _is_compact_section_doc_card(operation):
+        content_html = _shape_content_html(operation, layout=layout)
+        plain_text = re.sub(r"<[^>]+>", " ", content_html)
+        plain_text = re.sub(r"\s+", " ", plain_text).strip()
+        estimated_lines = max(
+            4,
+            int(max(len(plain_text), 1) / max(layout.chars_per_line, 20.0)),
+        )
+        return max(160.0, 108.0 + (estimated_lines * 24.0))
 
     content_html = _shape_content_html(operation, layout=layout) if operation.get("item_type") == "doc" else _operation_content_html(operation)
     plain_text = re.sub(r"<[^>]+>", " ", content_html)
@@ -1740,6 +1818,10 @@ def _doc_card_html(operation: dict[str, Any], *, layout: LayoutConfig) -> list[s
         return lines
     if _is_section_header_doc_card(operation):
         return [f"<p><strong>{html.escape(_doc_card_title(operation))}</strong></p>"]
+    if _is_compact_section_doc_card(operation):
+        title = html.escape(_doc_card_title(operation))
+        content = _sanitize_markdown_for_miro(str(operation.get("content") or ""), include_payload_notes=False)
+        return [f"<p><strong>{title}</strong></p>", _markdown_to_simple_html(content)]
     if _is_body_block_doc_card(operation):
         content = _sanitize_markdown_for_miro(str(operation.get("content") or ""), include_payload_notes=False)
         return [_markdown_to_simple_html(content)]
@@ -2010,12 +2092,22 @@ def _apply_section_container_layout(
         for operation in planned_operations
         if isinstance(operation.get("artifact_id"), str)
     }
+    artifact_source_type_lookup = {
+        str(operation.get("artifact_id")): _operation_source_type(operation)
+        for operation in planned_operations
+        if isinstance(operation.get("artifact_id"), str)
+    }
     for section_container_artifact_id, index in section_container_indices.items():
         section_artifact_id = section_container_artifact_id.removeprefix("section_container:")
         member_operations = [
             operation
             for operation in planned_operations
-            if _operation_belongs_to_section(operation, section_artifact_id, artifact_parent_lookup)
+            if _operation_belongs_to_section(
+                operation,
+                section_artifact_id,
+                artifact_parent_lookup,
+                artifact_source_type_lookup,
+            )
         ]
         if not member_operations:
             continue
@@ -2138,19 +2230,141 @@ def _operation_belongs_to_section(
     operation: dict[str, Any],
     section_artifact_id: str,
     artifact_parent_lookup: dict[str, Any],
+    artifact_source_type_lookup: dict[str, str],
 ) -> bool:
     if _is_section_container(operation):
         return False
     artifact_id = operation.get("artifact_id")
     if not isinstance(artifact_id, str):
         return False
-    current: str | None = artifact_id
-    while isinstance(current, str) and current:
-        if current == section_artifact_id:
-            return True
-        next_parent = artifact_parent_lookup.get(current)
-        current = next_parent if isinstance(next_parent, str) else None
-    return False
+    if artifact_id == section_artifact_id:
+        return True
+    nearest_section_header = _nearest_section_header_ancestor(
+        artifact_id if _operation_source_type(operation) == "section_header" else artifact_parent_lookup.get(artifact_id),
+        artifact_parent_lookup,
+        artifact_source_type_lookup,
+    )
+    return nearest_section_header == section_artifact_id
+
+
+def _pack_source_frames_in_lanes(
+    operations: list[dict[str, Any]],
+    *,
+    layout: LayoutConfig,
+) -> None:
+    source_frame_columns = max(1, int(round(layout.source_frame_columns)))
+    if source_frame_columns <= 1:
+        return
+
+    groups_by_lane: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for operation in operations:
+        if operation.get("item_type") != "source_frame":
+            continue
+        source_artifact_id = operation.get("source_artifact_id")
+        if not isinstance(source_artifact_id, str) or not source_artifact_id:
+            continue
+        lane_key = (
+            str(operation.get("phase_zone") or "planning"),
+            str(operation.get("workstream") or "general"),
+        )
+        planned_position = operation.get("planned_position")
+        planned_geometry = operation.get("planned_geometry")
+        if not isinstance(planned_position, dict) or not isinstance(planned_geometry, dict):
+            continue
+        groups_by_lane.setdefault(lane_key, []).append(
+            {
+                "source_artifact_id": source_artifact_id,
+                "frame": operation,
+                "position": planned_position,
+                "geometry": planned_geometry,
+            }
+        )
+
+    for lane_groups in groups_by_lane.values():
+        if len(lane_groups) <= 1:
+            continue
+        lane_groups.sort(
+            key=lambda item: (
+                float(item["position"].get("y", 0.0)),
+                float(item["position"].get("x", 0.0)),
+            )
+        )
+        lane_left = min(
+            float(item["position"].get("x", 0.0)) - (float(item["geometry"].get("width", 0.0)) / 2.0)
+            for item in lane_groups
+        )
+        lane_top = min(
+            float(item["position"].get("y", 0.0)) - (float(item["geometry"].get("height", 0.0)) / 2.0)
+            for item in lane_groups
+        )
+
+        for index, item in enumerate(lane_groups):
+            item["grid_row"] = index // source_frame_columns
+            item["grid_col"] = index % source_frame_columns
+
+        column_widths: dict[int, float] = {}
+        row_heights: dict[int, float] = {}
+        for item in lane_groups:
+            col = int(item["grid_col"])
+            row = int(item["grid_row"])
+            width = float(item["geometry"].get("width", 0.0))
+            height = float(item["geometry"].get("height", 0.0))
+            column_widths[col] = max(column_widths.get(col, 0.0), width)
+            row_heights[row] = max(row_heights.get(row, 0.0), height)
+
+        column_offsets: dict[int, float] = {}
+        running_x = lane_left
+        for col in range(source_frame_columns):
+            column_offsets[col] = running_x
+            running_x += column_widths.get(col, 0.0) + layout.source_frame_gap_x
+
+        max_row = max(row_heights.keys(), default=0)
+        row_offsets: dict[int, float] = {}
+        running_y = lane_top
+        for row in range(max_row + 1):
+            row_offsets[row] = running_y
+            running_y += row_heights.get(row, 0.0) + layout.source_frame_gap_y
+
+        for item in lane_groups:
+            frame = item["frame"]
+            source_artifact_id = item["source_artifact_id"]
+            col = int(item["grid_col"])
+            row = int(item["grid_row"])
+            width = float(item["geometry"].get("width", 0.0))
+            height = float(item["geometry"].get("height", 0.0))
+            target_left = column_offsets[col]
+            target_top = row_offsets[row]
+            current_left = float(item["position"].get("x", 0.0)) - (width / 2.0)
+            current_top = float(item["position"].get("y", 0.0)) - (height / 2.0)
+            delta_x = target_left - current_left
+            delta_y = target_top - current_top
+            if abs(delta_x) < 0.01 and abs(delta_y) < 0.01:
+                continue
+            _translate_source_group(
+                operations,
+                source_artifact_id=source_artifact_id,
+                delta_x=delta_x,
+                delta_y=delta_y,
+            )
+
+
+def _translate_source_group(
+    operations: list[dict[str, Any]],
+    *,
+    source_artifact_id: str,
+    delta_x: float,
+    delta_y: float,
+) -> None:
+    for operation in operations:
+        if operation.get("source_artifact_id") != source_artifact_id:
+            continue
+        if operation.get("planned_parent_artifact_id"):
+            continue
+        planned_position = operation.get("planned_position")
+        if not isinstance(planned_position, dict):
+            continue
+        planned_position["x"] = float(planned_position.get("x", 0.0)) + delta_x
+        planned_position["y"] = float(planned_position.get("y", 0.0)) + delta_y
 
 
 def _operations_bounds(
@@ -2264,7 +2478,7 @@ def _retry_delay(retry_after: str | None, attempt: int) -> float:
             return max(float(retry_after), 0.0)
         except ValueError:
             pass
-    return min(2**attempt, 8)
+    return min(2**attempt, 12)
 
 
 def _iso_now() -> str:

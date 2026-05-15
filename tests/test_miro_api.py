@@ -7,6 +7,7 @@ from bmad_miro_sync.miro_api import (
     MiroApiError,
     _apply_layout_positions,
     _doc_card_html,
+    _execute_create_batch,
     _execute_single_operation,
     _result_entry_from_response,
     _shape_kind,
@@ -26,6 +27,40 @@ class _MissingFrameUpdateClient:
             "geometry": payload["geometry"],
             "links": {"self": f"https://api.miro.com/v2/boards/{board_id}/frames/new-frame-id"},
             "createdAt": "2026-05-06T12:00:00Z",
+        }
+
+
+class _RateLimitedBulkCreateClient:
+    def bulk_create_items(self, board_id: str, payload: list[dict]) -> list[dict]:
+        raise MiroApiError(
+            f'Miro API POST /v2/boards/{board_id}/items/bulk failed with 429: {{ "message" : "Request rate limit exceeded", "status" : 429 }}'
+        )
+
+    def create_shape(self, board_id: str, payload: dict) -> dict:
+        return {
+            "id": f"shape-{abs(hash(payload['data']['content'])) % 100000}",
+            "position": payload["position"],
+            "geometry": payload["geometry"],
+            "links": {"self": f"https://api.miro.com/v2/boards/{board_id}/shapes/example"},
+            "createdAt": "2026-05-15T12:00:00Z",
+        }
+
+    def create_text(self, board_id: str, payload: dict) -> dict:
+        return {
+            "id": f"text-{abs(hash(payload['data']['content'])) % 100000}",
+            "position": payload["position"],
+            "geometry": payload["geometry"],
+            "links": {"self": f"https://api.miro.com/v2/boards/{board_id}/texts/example"},
+            "createdAt": "2026-05-15T12:00:00Z",
+        }
+
+    def create_frame(self, board_id: str, payload: dict) -> dict:
+        return {
+            "id": "frame-example",
+            "position": payload["position"],
+            "geometry": payload["geometry"],
+            "links": {"self": f"https://api.miro.com/v2/boards/{board_id}/frames/example"},
+            "createdAt": "2026-05-15T12:00:00Z",
         }
 
 
@@ -780,6 +815,25 @@ class MiroApiLayoutTests(unittest.TestCase):
 
         self.assertEqual(rendered, "<p><strong>Goals</strong></p>")
 
+    def test_compact_section_card_renders_heading_and_full_body(self) -> None:
+        layout = LayoutConfig()
+        operation = {
+            "item_type": "doc",
+            "artifact_id": "_bmad-output/planning-artifacts/prd.md#prd/recommended-techniques",
+            "title": "PRD / Recommended Techniques",
+            "phase_zone": "planning",
+            "workstream": "product",
+            "heading_level": 2,
+            "source_type": "section_compact",
+            "content": "- First Principles Thinking\n- Morphological Analysis\n- Six Thinking Hats\n",
+        }
+
+        rendered = "".join(_doc_card_html(operation, layout=layout))
+
+        self.assertIn("<strong>Recommended Techniques</strong>", rendered)
+        self.assertIn("First Principles Thinking", rendered)
+        self.assertIn("Morphological Analysis", rendered)
+
     def test_hybrid_section_container_encloses_header_and_nested_cards(self) -> None:
         layout = LayoutConfig()
         operations = [
@@ -896,6 +950,143 @@ class MiroApiLayoutTests(unittest.TestCase):
             self.assertLessEqual(right, c_right)
             self.assertGreaterEqual(top, c_top)
             self.assertLessEqual(bottom, c_bottom)
+
+    def test_section_container_only_wraps_direct_section_content(self) -> None:
+        layout = LayoutConfig()
+        operations = [
+            {
+                "op_id": "zone:planning",
+                "action": "ensure_zone",
+                "item_type": "zone",
+                "phase_zone": "planning",
+                "workstream": "general",
+            },
+            {
+                "op_id": "workstream:planning:product",
+                "action": "ensure_workstream_anchor",
+                "item_type": "workstream_anchor",
+                "phase_zone": "planning",
+                "workstream": "product",
+            },
+            {
+                "op_id": "source_frame:prd",
+                "action": "create_source_frame",
+                "item_type": "source_frame",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+            },
+            {
+                "op_id": "doc:source_header:prd",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                "artifact_id": "source_header:_bmad-output/planning-artifacts/prd.md",
+                "title": "PRD",
+                "content": "Product · 2 sections",
+                "heading_level": 0,
+                "source_type": "source_header",
+            },
+            {
+                "op_id": "section_container:parent",
+                "action": "create_section_container",
+                "item_type": "section_container",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                "artifact_id": "section_container:_bmad-output/planning-artifacts/prd.md#parent",
+                "parent_artifact_id": "_bmad-output/planning-artifacts/prd.md#root",
+                "title": "Parent",
+            },
+            {
+                "op_id": "doc:parent",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                "artifact_id": "_bmad-output/planning-artifacts/prd.md#parent",
+                "parent_artifact_id": "_bmad-output/planning-artifacts/prd.md#root",
+                "title": "Parent",
+                "content": "## Parent\n",
+                "heading_level": 2,
+                "source_type": "section_header",
+            },
+            {
+                "op_id": "doc:parent:p1",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                "artifact_id": "_bmad-output/planning-artifacts/prd.md#parent::paragraph-1",
+                "parent_artifact_id": "_bmad-output/planning-artifacts/prd.md#parent",
+                "title": "Parent",
+                "content": "Direct body copy.",
+                "heading_level": 3,
+                "source_type": "paragraph",
+            },
+            {
+                "op_id": "section_container:child",
+                "action": "create_section_container",
+                "item_type": "section_container",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                "artifact_id": "section_container:_bmad-output/planning-artifacts/prd.md#child",
+                "parent_artifact_id": "_bmad-output/planning-artifacts/prd.md#parent",
+                "title": "Child",
+            },
+            {
+                "op_id": "doc:child",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                "artifact_id": "_bmad-output/planning-artifacts/prd.md#child",
+                "parent_artifact_id": "_bmad-output/planning-artifacts/prd.md#parent",
+                "title": "Child",
+                "content": "### Child\n",
+                "heading_level": 3,
+                "source_type": "section_header",
+            },
+            {
+                "op_id": "doc:child:p1",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "planning",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/planning-artifacts/prd.md",
+                "artifact_id": "_bmad-output/planning-artifacts/prd.md#child::paragraph-1",
+                "parent_artifact_id": "_bmad-output/planning-artifacts/prd.md#child",
+                "title": "Child",
+                "content": "Nested body copy that should stay out of the parent container.",
+                "heading_level": 4,
+                "source_type": "paragraph",
+            },
+        ]
+
+        planned = _apply_layout_positions(operations, layout)
+        parent_container = next(
+            op
+            for op in planned
+            if op.get("artifact_id") == "section_container:_bmad-output/planning-artifacts/prd.md#parent"
+        )
+        child_body = next(
+            op
+            for op in planned
+            if op.get("artifact_id") == "_bmad-output/planning-artifacts/prd.md#child::paragraph-1"
+        )
+        parent_pos = parent_container["planned_position"]
+        parent_geo = parent_container["planned_geometry"]
+        parent_right = parent_pos["x"] + (parent_geo["width"] / 2.0)
+        child_pos = child_body["planned_position"]
+        child_geo = child_body["planned_geometry"]
+        child_left = child_pos["x"] - (child_geo["width"] / 2.0)
+        self.assertGreater(child_left, parent_right)
 
     def test_source_frame_expands_to_multiple_columns_when_height_budget_exceeded(self) -> None:
         layout = LayoutConfig(source_columns=1.0, source_max_columns=4.0, source_max_height=900.0, doc_width=520.0)
@@ -1050,6 +1241,129 @@ class MiroApiLayoutTests(unittest.TestCase):
         body_cards = [op for op in planned if op.get("source_type") == "paragraph"]
         unique_x = {round(op["planned_position"]["x"], 1) for op in body_cards}
         self.assertGreater(len(unique_x), 1)
+
+    def test_source_frames_pack_into_lane_grid(self) -> None:
+        layout = LayoutConfig(
+            source_columns=2.0,
+            source_max_columns=6.0,
+            source_max_height=900.0,
+            source_frame_columns=2.0,
+            source_frame_gap_x=180.0,
+            source_frame_gap_y=120.0,
+            doc_width=520.0,
+        )
+        operations = [
+            {
+                "op_id": "zone:analysis",
+                "action": "ensure_zone",
+                "item_type": "zone",
+                "phase_zone": "analysis",
+                "workstream": "general",
+            },
+            {
+                "op_id": "workstream:analysis:product",
+                "action": "ensure_workstream_anchor",
+                "item_type": "workstream_anchor",
+                "phase_zone": "analysis",
+                "workstream": "product",
+            },
+        ]
+        for source_index in range(3):
+            source_id = f"_bmad-output/source-{source_index}.md"
+            operations.extend(
+                [
+                    {
+                        "op_id": f"source_frame:{source_index}",
+                        "action": "create_source_frame",
+                        "item_type": "source_frame",
+                        "phase_zone": "analysis",
+                        "workstream": "product",
+                        "source_artifact_id": source_id,
+                    },
+                    {
+                        "op_id": f"doc:source_header:{source_index}",
+                        "action": "create_doc",
+                        "item_type": "doc",
+                        "phase_zone": "analysis",
+                        "workstream": "product",
+                        "source_artifact_id": source_id,
+                        "artifact_id": f"source_header:{source_id}",
+                        "title": f"Source {source_index}",
+                        "content": "Product · 1 section",
+                        "heading_level": 0,
+                        "source_type": "source_header",
+                    },
+                    {
+                        "op_id": f"doc:section:{source_index}",
+                        "action": "create_doc",
+                        "item_type": "doc",
+                        "phase_zone": "analysis",
+                        "workstream": "product",
+                        "source_artifact_id": source_id,
+                        "artifact_id": f"{source_id}#section",
+                        "parent_artifact_id": f"{source_id}#root",
+                        "title": f"Section {source_index}",
+                        "content": "## Heading\n\nThis is a substantial paragraph designed to consume enough height to trigger lane grid packing.",
+                        "heading_level": 2,
+                        "source_type": "section_header",
+                    },
+                ]
+            )
+        planned = _apply_layout_positions(operations, layout)
+        frames = [op for op in planned if op.get("item_type") == "source_frame"]
+        frames.sort(key=lambda op: op["planned_position"]["y"])
+        self.assertEqual(len(frames), 3)
+        top_row = frames[:2]
+        self.assertNotAlmostEqual(top_row[0]["planned_position"]["x"], top_row[1]["planned_position"]["x"])
+        self.assertAlmostEqual(top_row[0]["planned_position"]["y"], top_row[1]["planned_position"]["y"], delta=5.0)
+        self.assertGreater(frames[2]["planned_position"]["y"], top_row[0]["planned_position"]["y"])
+
+    def test_create_batch_falls_back_to_single_creates_after_rate_limit(self) -> None:
+        client = _RateLimitedBulkCreateClient()
+        layout = LayoutConfig()
+        operations = [
+            {
+                "op_id": "doc:one",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "analysis",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/example.md",
+                "artifact_id": "_bmad-output/example.md#one",
+                "artifact_sha256": "sha-one",
+                "title": "One",
+                "content": "Paragraph one.",
+                "target_key": "artifact:_bmad-output/example.md#one",
+            },
+            {
+                "op_id": "doc:two",
+                "action": "create_doc",
+                "item_type": "doc",
+                "phase_zone": "analysis",
+                "workstream": "product",
+                "source_artifact_id": "_bmad-output/example.md",
+                "artifact_id": "_bmad-output/example.md#two",
+                "artifact_sha256": "sha-two",
+                "title": "Two",
+                "content": "Paragraph two.",
+                "target_key": "artifact:_bmad-output/example.md#two",
+            },
+        ]
+
+        ok, error_message, created_items = _execute_create_batch(
+            client,
+            board_id="board123",
+            board_url="https://miro.com/app/board/board123/",
+            operations=operations,
+            artifact_index={},
+            layout=layout,
+            item_id_by_artifact={},
+        )
+
+        self.assertTrue(ok)
+        self.assertIsNone(error_message)
+        self.assertEqual(len(created_items), 2)
+        self.assertTrue(all(item["execution_status"] == "created" for item in created_items))
 
 
 if __name__ == "__main__":
