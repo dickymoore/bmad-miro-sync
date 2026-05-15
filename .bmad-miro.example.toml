@@ -63,6 +63,8 @@ planning = true
 solutioning = true
 implementation = true
 stories_table = true
+#card_mode = "hybrid_heading_paragraph_list_cards" # default: "section_summary_cards"
+#max_heading_level = 3
 
 [sync]
 removed_item_policy = "archive"
